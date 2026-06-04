@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-inference-engine"
+version = "0.1.0"
+description = "From-scratch LLM inference engine — Llama 3.2 1B"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "safetensors>=0.4",
+    "tokenizers>=0.19",
+    "transformers>=4.40",
+    "torch>=2.2",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "huggingface_hub>=0.23",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+llm-generate = "engine.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
