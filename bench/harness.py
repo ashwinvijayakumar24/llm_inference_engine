@@ -51,6 +51,21 @@ def _percentile(values: list[float], p: float) -> float:
     return float(np.percentile(values, p)) if values else 0.0
 
 
+def _weight_mem_mb(weights: dict) -> float:
+    """Sum stored bytes of all weights (QuantWeight or tensor) → MB."""
+    total = 0
+    seen  = set()
+    for w in weights.values():
+        if id(w) in seen:        # tied lm_head aliases embed — count once
+            continue
+        seen.add(id(w))
+        if hasattr(w, "nbytes") and callable(w.nbytes):
+            total += w.nbytes()                          # QuantWeight
+        else:
+            total += w.element_size() * w.nelement()     # torch tensor
+    return total / 1024 / 1024
+
+
 def _hw_metadata() -> dict:
     return {
         "hostname":   platform.node(),
@@ -175,6 +190,9 @@ def main():
     parser.add_argument("--n-runs",      type=int, default=3,    help="Measured runs per prompt")
     parser.add_argument("--weights",     default="weights",       help="Path to weights directory")
     parser.add_argument("--results-dir", default="bench/results", help="Output directory")
+    parser.add_argument("--quant",       default="none", choices=["none", "int8", "int4"],
+                        help="GPU weight quantization (gpu backend only)")
+    parser.add_argument("--group-size",  type=int, default=128, help="int4 group size")
     args = parser.parse_args()
 
     print("Loading model...", flush=True)
@@ -185,12 +203,19 @@ def main():
 
     config    = load_config(args.weights)
     tokenizer = AutoTokenizer.from_pretrained(args.weights)
+    weight_mem_mb = 0.0
 
     if args.backend == "gpu":
-        from engine.loader import load_weights_gpu
         from engine.model_gpu import LlamaModelGPU
-        weights = load_weights_gpu(args.weights, config)
-        model   = LlamaModelGPU(weights, config)
+        if args.quant == "none":
+            from engine.loader import load_weights_gpu
+            weights = load_weights_gpu(args.weights, config)
+        else:
+            from engine.loader import load_weights_gpu_quant
+            weights = load_weights_gpu_quant(args.weights, config, mode=args.quant,
+                                             group_size=args.group_size)
+        weight_mem_mb = round(_weight_mem_mb(weights), 1)
+        model = LlamaModelGPU(weights, config)
     else:
         from engine.loader import load_weights
         from engine.model import LlamaModel
@@ -199,15 +224,19 @@ def main():
 
     meta = _hw_metadata()
     print(f"Hardware: {meta['platform']}")
-    print(f"Backend: {args.backend}  max_tokens={args.max_tokens}  "
+    print(f"Backend: {args.backend}  quant={args.quant}  max_tokens={args.max_tokens}  "
           f"warmup={args.n_warmup}  runs={args.n_runs}")
+    if weight_mem_mb:
+        print(f"Weight memory: {weight_mem_mb} MB")
 
     rows = run_benchmark(model, tokenizer, greedy, args.max_tokens, args.n_warmup, args.n_runs)
 
+    label = args.backend if args.quant == "none" else f"{args.backend}_{args.quant}"
     for row in rows:
-        row.update({"backend": args.backend, **meta})
+        row.update({"backend": label, "quant": args.quant,
+                    "weight_mem_mb": weight_mem_mb, **meta})
 
-    write_results(rows, args.backend, Path(args.results_dir))
+    write_results(rows, label, Path(args.results_dir))
 
 
 if __name__ == "__main__":

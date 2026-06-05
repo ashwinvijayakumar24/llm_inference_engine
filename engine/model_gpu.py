@@ -74,6 +74,41 @@ class LlamaModelGPU:
         logits = (last @ w["lm_head.weight"].T)[0]   # (vocab,) fp16
         return logits.cpu().float().numpy()
 
+    def forward_all(self, token_ids: list[int]) -> np.ndarray:
+        """
+        No-cache forward over the full sequence, returning logits at EVERY
+        position — shape (seq, vocab). Used by perplexity eval (teacher forcing).
+        Not on the hot path; O(seq^2) attention is fine for offline eval.
+        """
+        w   = self.weights
+        seq = len(token_ids)
+
+        ids_t     = torch.tensor(token_ids, dtype=torch.long, device=self.device)
+        x         = w["model.embed_tokens.weight"][ids_t]
+        positions = torch.arange(seq, dtype=torch.long, device=self.device)
+
+        for i in range(self.n_layers):
+            p = f"model.layers.{i}"
+            h = rms_norm_gpu(x, w[f"{p}.input_layernorm.weight"], self.eps)
+            h = gqa_attention_gpu(
+                h,
+                w[f"{p}.self_attn.q_proj.weight"],
+                w[f"{p}.self_attn.k_proj.weight"],
+                w[f"{p}.self_attn.v_proj.weight"],
+                w[f"{p}.self_attn.o_proj.weight"],
+                self.cos, self.sin, positions,
+                self.n_heads, self.n_kv, self.head_dim,
+            )
+            x = x + h
+            h = rms_norm_gpu(x, w[f"{p}.post_attention_layernorm.weight"], self.eps)
+            h = swiglu_ffn_gpu(h, w[f"{p}.mlp.gate_proj.weight"],
+                               w[f"{p}.mlp.up_proj.weight"], w[f"{p}.mlp.down_proj.weight"])
+            x = x + h
+
+        x      = rms_norm_gpu(x, w["model.norm.weight"], self.eps)
+        logits = x @ w["lm_head.weight"].T   # (seq, vocab) fp16
+        return logits.cpu().float().numpy()
+
     def decode_step(self, token_id: int, kv_cache: KVCacheGPU) -> np.ndarray:
         """One decode step. Returns logits (vocab,) as CPU numpy."""
         w = self.weights
