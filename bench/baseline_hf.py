@@ -38,12 +38,12 @@ def main():
     rows = []
 
     for prompt_key, prompt_text in PROMPTS.items():
-        messages  = [{"role": "user", "content": prompt_text}]
-        input_ids = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        ).to("cuda:0")
+        messages   = [{"role": "user", "content": prompt_text}]
+        prompt_str = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        token_list = tokenizer.encode(prompt_str)
+        input_ids  = torch.tensor([token_list], dtype=torch.long, device="cuda:0")
 
-        n_prompt = input_ids.shape[-1]
+        n_prompt = len(token_list)
         print(f"\n  [{prompt_key}] {n_prompt} prompt tokens", flush=True)
 
         for i in range(args.n_warmup):
