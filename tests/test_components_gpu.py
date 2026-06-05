@@ -132,10 +132,11 @@ def test_swiglu_ffn_gpu_vs_cpu():
 
     rng    = np.random.default_rng(2)
     seq, H, FF = 4, 16, 32
-    x_np      = rng.standard_normal((seq, H)).astype(np.float32)
-    gate_np   = rng.standard_normal((FF, H)).astype(np.float32)
-    up_np     = rng.standard_normal((FF, H)).astype(np.float32)
-    down_np   = rng.standard_normal((H,  FF)).astype(np.float32)
+    scale  = 0.02   # keep intermediate values small so fp16 precision holds
+    x_np      = (rng.standard_normal((seq, H)) * scale).astype(np.float32)
+    gate_np   = (rng.standard_normal((FF, H)) * scale).astype(np.float32)
+    up_np     = (rng.standard_normal((FF, H)) * scale).astype(np.float32)
+    down_np   = (rng.standard_normal((H,  FF)) * scale).astype(np.float32)
 
     cpu_out = swiglu_ffn(x_np, gate_np, up_np, down_np)
 
