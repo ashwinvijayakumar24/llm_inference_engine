@@ -115,8 +115,9 @@ def run_benchmark(
     rows = []
 
     for prompt_key, prompt_text in PROMPTS.items():
-        messages  = [{"role": "user", "content": prompt_text}]
-        token_ids = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+        messages   = [{"role": "user", "content": prompt_text}]
+        prompt_str = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        token_ids  = tokenizer.encode(prompt_str)
 
         print(f"\n  [{prompt_key}] {len(token_ids)} prompt tokens", flush=True)
 
