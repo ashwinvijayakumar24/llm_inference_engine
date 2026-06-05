@@ -104,3 +104,55 @@ def load_weights_gpu(weights_path: str, config: dict, device: str = "cuda:0") ->
         raise ValueError("lm_head.weight missing and tie_word_embeddings is false")
 
     return weights
+
+
+# The 7 per-layer linear projections that get quantized. Everything else
+# (embed_tokens, lm_head, RMSNorm weights) stays fp16.
+_QUANTIZED_SUFFIXES = (
+    "self_attn.q_proj.weight",
+    "self_attn.k_proj.weight",
+    "self_attn.v_proj.weight",
+    "self_attn.o_proj.weight",
+    "mlp.gate_proj.weight",
+    "mlp.up_proj.weight",
+    "mlp.down_proj.weight",
+)
+
+
+def load_weights_gpu_quant(
+    weights_path: str,
+    config: dict,
+    mode: str = "int8",
+    group_size: int = 128,
+    device: str = "cuda:0",
+) -> dict:
+    """
+    Load weights as fp16, then replace the 7 per-layer linear projections with
+    QuantWeight objects (int8 per-channel or int4 group-wise). Non-linear tensors
+    (embed, tied lm_head, RMSNorm) stay fp16.
+
+    The weight-dict key scheme is unchanged — only the value TYPE changes for the
+    quantized linears. components_gpu.linear() handles both types transparently.
+    """
+    from engine.quant import (
+        QuantWeight,
+        quantize_int8_perchannel,
+        quantize_int4_group,
+    )
+
+    weights = load_weights_gpu(weights_path, config, device)
+
+    for name in list(weights.keys()):
+        if not name.endswith(_QUANTIZED_SUFFIXES):
+            continue
+        w = weights[name]
+        if mode == "int8":
+            q, scale = quantize_int8_perchannel(w)
+            weights[name] = QuantWeight(q, scale, "int8")
+        elif mode == "int4":
+            q, scale = quantize_int4_group(w, group_size=group_size)
+            weights[name] = QuantWeight(q, scale, "int4", group_size)
+        else:
+            raise ValueError(f"Unknown quant mode: {mode}")
+
+    return weights

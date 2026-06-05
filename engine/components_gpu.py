@@ -8,6 +8,21 @@ RoPE tables are fp32 for precision; all activations are fp16.
 import torch
 import torch.nn.functional as F
 
+from engine.quant import QuantWeight
+
+
+def linear(x: torch.Tensor, w) -> torch.Tensor:
+    """
+    Single matmul chokepoint: x @ W.T.
+
+    If `w` is a QuantWeight, dequantize it to fp16 on the fly, then matmul.
+    If `w` is a plain tensor, this is bit-identical to the original `x @ w.T`
+    (so the fp16 path and all existing tests are unchanged).
+    """
+    if isinstance(w, QuantWeight):
+        w = w.dequantize()
+    return x @ w.T
+
 
 def rms_norm_gpu(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
     """RMSNorm in fp32 internally for numerical safety, returns fp16."""
@@ -104,9 +119,9 @@ def gqa_attention_gpu(
     seq    = x.shape[0]
     groups = n_heads // n_kv_heads
 
-    q = (x @ q_w.T).reshape(seq, n_heads,    head_dim)
-    k = (x @ k_w.T).reshape(seq, n_kv_heads, head_dim)
-    v = (x @ v_w.T).reshape(seq, n_kv_heads, head_dim)
+    q = linear(x, q_w).reshape(seq, n_heads,    head_dim)
+    k = linear(x, k_w).reshape(seq, n_kv_heads, head_dim)
+    v = linear(x, v_w).reshape(seq, n_kv_heads, head_dim)
 
     cos_pos = cos[positions]   # (seq, head_dim)
     sin_pos = sin[positions]
@@ -146,7 +161,7 @@ def gqa_attention_gpu(
     out = out.transpose(0, 1)            # (seq, n_heads, head_dim)
     out = out.reshape(seq, n_heads * head_dim)
 
-    return out @ o_w.T
+    return linear(out, o_w)
 
 
 def swiglu_ffn_gpu(
@@ -156,6 +171,6 @@ def swiglu_ffn_gpu(
     down_w: torch.Tensor,
 ) -> torch.Tensor:
     """SwiGLU FFN: down( silu(gate(x)) * up(x) )"""
-    gate = F.silu(x @ gate_w.T)
-    up   = x @ up_w.T
-    return (gate * up) @ down_w.T
+    gate = F.silu(linear(x, gate_w))
+    up   = linear(x, up_w)
+    return linear(gate * up, down_w)
