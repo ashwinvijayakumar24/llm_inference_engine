@@ -940,7 +940,64 @@ The naive from-scratch engine is now characterized against HF transformers and l
 
 ## Phase 4 — Differentiators
 
-*Not yet started.*
+Scope decision: **3 of 5 features** (quality over quantity, per career strategy). Quantization → custom CUDA kernel → continuous batching (stretch). Skip paged KV and speculative decoding. Each feature is measured against the Phase 3 baseline of **~79 tok/s decode** on A100.
+
+---
+
+### Task 4.1 — Int8/Int4 Weight-Only Quantization ✅
+
+**Completed:** 2026-06-05
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `engine/quant.py` | int8 per-channel + int4 group-wise quant/dequant, `QuantWeight` container |
+| `engine/components_gpu.py` | `linear(x, w)` chokepoint — dequantizes `QuantWeight` on the fly, else plain matmul |
+| `engine/loader.py` | `load_weights_gpu_quant(mode, group_size)` — quantizes the 7 per-layer linears |
+| `engine/model_gpu.py` | `forward_all()` — all-position logits (no cache) for perplexity eval |
+| `bench/perplexity.py` + `bench/wikitext_sample.txt` | teacher-forcing perplexity for fp16/int8/int4 |
+| `bench/harness.py` | `--quant none\|int8\|int4` flag, `weight_mem_mb` column |
+| `tests/test_quant.py` | 10 fast tests (Mac CPU) + 1 slow (PACE: int8 argmax matches fp16) |
+
+#### What quantization is
+
+A weight trained in fp16 (2 bytes) is stored as a small integer plus a floating-point **scale** that maps it back to the original range. Symmetric quantization: `q = round(W / scale)`, `scale = max(|W|) / qmax` (no zero-point — the range is centered on 0). Reconstruct with `W ≈ q × scale`.
+
+- **int8 per-channel:** `qmax=127`, one scale per **output row** (axis 0). Each output channel is an independent dot product over the input, so per-row scales minimize error where it matters.
+- **int4 group-wise:** `qmax=7`, one scale per **group of 128 input columns**. int4's tiny range (16 levels) needs finer-grained scales to stay accurate, hence per-group instead of per-row. Two int4 values packed into one byte.
+
+**Why per output row, not input column?** Weights are stored `(out, in)` and applied as `x @ W.T`. Each output is `sum_in(x · W[out])` — an independent reduction. Giving each output channel its own scale is the natural axis. Quantizing the wrong axis produces fluent-but-degraded text — the failure is silent, which is why `test_int8_model_argmax_matches_fp16` guards it.
+
+#### Design: dequantize-on-the-fly
+
+Store `q + scale`; at matmul time reconstruct the fp16 weight tile and do the normal `x @ W.T`. This **isolates the quantization math from kernel performance** — we prove the math is correct (memory ↓, quality ~flat) without also writing a packed int8 GEMM. The `linear()` chokepoint is the single seam: when the weight is a plain tensor it is bit-identical to `x @ w.T` (so the fp16 path and all Phase 3 tests are unchanged); when it is a `QuantWeight` it dequantizes first.
+
+**What stays fp16:** `embed_tokens`, the tied `lm_head`, and all RMSNorm weights. Embedding is an index lookup, not a matmul — quantizing it gains nothing and risks output quality. For a 128k-vocab 1B model the embed table is ~525 MB, which is why the total memory drop is less than the theoretical 2×/4× (see below).
+
+#### A subtlety fixed: rounding ties
+
+Quantizing computes the scale in fp32 but stores it as fp16. If quant rounds with the fp32 scale and dequant uses the fp16 scale, a value landing exactly on a rounding tie (e.g. `w/scale = -0.5`) can round differently in the two paths — a silent off-by-one in the stored integer. Fix: **round using the fp16-rounded scale** (`scale = scale.half().float()` before `round`), so quant and dequant use the identical scale. This also makes reconstruction maximally consistent.
+
+#### Results (A100, fixed 513-token eval text)
+
+| Mode | Weight memory | Δ memory | Perplexity | Δ perplexity | Decode tok/s |
+|------|--------------|----------|-----------|-------------|-------------|
+| fp16 | 2357 MB | — | 16.28 | — | ~79 |
+| int8 | 1430 MB | −39% | 16.42 | **+0.14** | ~45 |
+| int4 (g128) | 980 MB | −58% | 22.23 | +5.95 | ~22 |
+
+#### Two honest findings (strong interview material)
+
+**1. Memory drop is less than the naive 2×/4×.** Only the 7 per-layer linear projections are quantized; `embed_tokens`/`lm_head` (~525 MB, tied) stay fp16. The *quantized linears themselves* drop exactly 2× (int8) and 4× (int4) — int8 is 1 byte vs fp16's 2, int4 is 0.5 bytes. The headline reduction (−39% / −58%) is diluted by the unquantized embedding table, which is disproportionately large for a small model with a 128k vocab. On a 7B+ model the linears dominate and the drop approaches the theoretical limit.
+
+**2. tok/s *drops* with quantization here — and that is expected.** Dequantize-on-the-fly adds work to every matmul (reconstruct the fp16 tile, then GEMM), and int4 also unpacks nibbles. The win in this phase is **memory, not speed**. The production fix is a fused int8/int4 GEMM (cuBLAS/CUTLASS int8 kernels or packed weight kernels) that multiplies directly in low precision — deliberately scoped out. Stating this plainly is the honest framing: the quantization *math* is validated (int8 cost only +0.14 perplexity), and the path to recovering speed is named.
+
+**int8 is the clear win:** −39% memory for +0.14 perplexity (target was < 0.5). int4 at group-128 is too aggressive for a 1B model (+5.95 perplexity) — small models are more sensitive. A finer group size (32) typically narrows the int4 gap; documented as-is.
+
+#### Tests
+- **Fast (Mac CPU, no weights):** int8/int4 round-trip error bounded; int4 pack/unpack exact identity; `linear()` bit-identical to `x @ w.T` for plain fp16; quantized `linear` matches `x @ dequant(W).T`; memory ordering int4 < int8 < fp16; zero-row produces no NaN.
+- **Slow (PACE, real weights):** int8 model prefill → finite logits, first-token argmax matches fp16 (catches wrong-scale-axis bug). Loads one model at a time (`del` + `empty_cache`) to avoid OOM.
 
 ---
 
