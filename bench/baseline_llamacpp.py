@@ -1,107 +1,102 @@
 """
 llama.cpp baseline — run on PACE A100 (Phase 3.4).
 
-Runs llama.cpp CLI via subprocess, parses timing output,
-writes CSV row with backend="llamacpp".
+Uses llama-bench (llama.cpp's purpose-built benchmark tool) with CSV output.
+llama-bench runs non-interactively and reports prefill (pp) and decode (tg)
+tokens/sec directly — no fragile stdout parsing of the chat CLI.
 
 Usage (PACE only):
-    python bench/baseline_llamacpp.py \\
+    python -m bench.baseline_llamacpp \\
         --gguf-path weights/model.gguf \\
-        --llama-cpp-bin llama.cpp/build/bin/llama-cli \\
-        --max-tokens 128 --n-runs 3
+        --llama-bench-bin ../llama.cpp/build/bin/llama-bench \\
+        --max-tokens 128
 
 Prerequisites (do once on PACE):
     git clone https://github.com/ggerganov/llama.cpp
     cd llama.cpp
     cmake -B build -DGGML_CUDA=ON && cmake --build build -j4
+    pip install gguf sentencepiece
     python convert_hf_to_gguf.py ../llm_inference_engine/weights/ --outtype f16 \\
         --outfile ../llm_inference_engine/weights/model.gguf
+
+Note: llama-bench uses synthetic prompts of a fixed token length (not our
+short/medium/long text). tok/s depends on length, not content, so this is a
+fair throughput comparison. We sweep the same prompt lengths our prompts use.
 """
 
 import argparse
-import re
+import csv
+import io
 import subprocess
-import time
 from pathlib import Path
 
+# Prompt lengths (tokens) roughly matching harness short/medium/long prompts.
+PROMPT_LENS = {"short": 40, "medium": 46, "long": 57}
 
-def _parse_timings(stderr: str) -> dict:
-    """
-    Parse llama_print_timings lines from llama.cpp stderr.
-    Example lines:
-        llama_print_timings:        load time =   523.45 ms
-        llama_print_timings:      prompt eval time =  1234.56 ms /  16 tokens
-        llama_print_timings:             eval time =  5678.90 ms / 127 tokens
-    """
-    result = {}
 
-    m = re.search(r"prompt eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens", stderr)
-    if m:
-        prompt_ms = float(m.group(1))
-        n_prompt  = int(m.group(2))
-        result["ttft_s"]         = round(prompt_ms / 1000, 6)
-        result["n_prompt_tokens"] = n_prompt
-        result["prefill_tok_s"]  = round(n_prompt / (prompt_ms / 1000), 3) if prompt_ms > 0 else 0.0
-
-    m = re.search(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens", stderr)
-    if m:
-        eval_ms  = float(m.group(1))
-        n_decode = int(m.group(2))
-        result["n_decode_tokens"] = n_decode
-        result["decode_tok_s"]   = round(n_decode / (eval_ms / 1000), 3) if eval_ms > 0 else 0.0
-        result["itl_p50_ms"]     = round(eval_ms / n_decode, 3) if n_decode > 0 else 0.0
-        result["itl_p99_ms"]     = result["itl_p50_ms"]  # llama.cpp reports mean, not p99
-
-    return result
+def _run_llama_bench(bin_path: str, gguf: str, n_prompt: int, n_gen: int, ngl: int) -> list[dict]:
+    """Run one llama-bench invocation, return parsed CSV rows."""
+    cmd = [
+        bin_path,
+        "-m", gguf,
+        "-p", str(n_prompt),
+        "-n", str(n_gen),
+        "-ngl", str(ngl),
+        "-o", "csv",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"llama-bench failed:\n{proc.stderr}")
+    reader = csv.DictReader(io.StringIO(proc.stdout))
+    return list(reader)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="llama.cpp baseline")
-    parser.add_argument("--gguf-path",     required=True,  help="Path to .gguf model file")
-    parser.add_argument("--llama-cpp-bin", required=True,  help="Path to llama-cli binary")
-    parser.add_argument("--max-tokens",    type=int, default=128)
-    parser.add_argument("--n-warmup",      type=int, default=1)
-    parser.add_argument("--n-runs",        type=int, default=3)
-    parser.add_argument("--results-dir",   default="bench/results")
+    parser = argparse.ArgumentParser(description="llama.cpp baseline via llama-bench")
+    parser.add_argument("--gguf-path",       required=True, help="Path to .gguf model file")
+    parser.add_argument("--llama-bench-bin", required=True, help="Path to llama-bench binary")
+    parser.add_argument("--max-tokens",      type=int, default=128, help="Decode tokens (tg)")
+    parser.add_argument("--ngl",             type=int, default=99,  help="GPU layers to offload")
+    parser.add_argument("--results-dir",     default="bench/results")
     args = parser.parse_args()
 
-    from bench.harness import PROMPTS, write_results, _hw_metadata
+    from bench.harness import write_results, _hw_metadata
 
     rows = []
 
-    for prompt_key, prompt_text in PROMPTS.items():
-        print(f"\n  [{prompt_key}]", flush=True)
+    for prompt_key, n_prompt in PROMPT_LENS.items():
+        print(f"\n  [{prompt_key}] pp={n_prompt} tg={args.max_tokens} ... ", end="", flush=True)
+        bench_rows = _run_llama_bench(
+            args.llama_bench_bin, args.gguf_path, n_prompt, args.max_tokens, args.ngl
+        )
 
-        cmd = [
-            args.llama_cpp_bin,
-            "-m", args.gguf_path,
-            "-p", prompt_text,
-            "-n", str(args.max_tokens),
-            "--no-display-prompt",
-            "-ngl", "99",   # offload all layers to GPU
-        ]
+        prefill_tok_s = 0.0
+        decode_tok_s  = 0.0
+        for br in bench_rows:
+            np_ = int(br.get("n_prompt", 0))
+            ng_ = int(br.get("n_gen", 0))
+            ts  = float(br.get("avg_ts", 0.0))
+            if np_ > 0 and ng_ == 0:
+                prefill_tok_s = round(ts, 3)   # pp = prompt processing (prefill)
+            elif ng_ > 0 and np_ == 0:
+                decode_tok_s = round(ts, 3)    # tg = text generation (decode)
 
-        for i in range(args.n_warmup):
-            print(f"    warmup {i+1}/{args.n_warmup} ... ", end="", flush=True)
-            subprocess.run(cmd, capture_output=True, text=True)
-            print("done", flush=True)
+        itl_ms = round(1000.0 / decode_tok_s, 3) if decode_tok_s > 0 else 0.0
+        print(f"prefill={prefill_tok_s:.1f} tok/s  decode={decode_tok_s:.1f} tok/s", flush=True)
 
-        for i in range(args.n_runs):
-            print(f"    run {i+1}/{args.n_runs} ... ", end="", flush=True)
-            t_start = time.perf_counter()
-            proc    = subprocess.run(cmd, capture_output=True, text=True)
-            total_s = time.perf_counter() - t_start
-
-            timings = _parse_timings(proc.stderr)
-            timings["total_s"] = round(total_s, 6)
-            timings.setdefault("peak_mem_mb", 0.0)
-
-            print(
-                f"TTFT={timings.get('ttft_s', 0):.2f}s  "
-                f"decode={timings.get('decode_tok_s', 0):.1f} tok/s",
-                flush=True,
-            )
-            rows.append({"prompt_key": prompt_key, "run": i + 1, **timings})
+        rows.append({
+            "prompt_key":      prompt_key,
+            "run":             1,
+            "n_prompt_tokens": n_prompt,
+            "n_decode_tokens": args.max_tokens,
+            "ttft_s":          0.0,             # llama-bench reports throughput, not TTFT
+            "total_s":         0.0,
+            "prefill_tok_s":   prefill_tok_s,
+            "decode_tok_s":    decode_tok_s,
+            "itl_p50_ms":      itl_ms,          # derived from mean decode rate
+            "itl_p99_ms":      itl_ms,          # llama-bench reports mean, not p99
+            "peak_mem_mb":     0.0,
+        })
 
     for row in rows:
         row.update({"backend": "llamacpp", **_hw_metadata()})
