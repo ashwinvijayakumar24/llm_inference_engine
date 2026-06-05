@@ -20,6 +20,7 @@ FetchContent_MakeAvailable(nanobind)
 nanobind_add_module(engine_kernels
     bindings.cpp
     add_one_kernel.cu
+    attention_decode.cu
 )
 set_target_properties(engine_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(engine_kernels PRIVATE CUDA::cudart)
