@@ -656,9 +656,202 @@ curl -N -X POST http://localhost:8000/v1/chat/completions \
 
 ---
 
-## Phase 3 — Baseline Benchmarks
+## Phase 3 — Baseline Benchmarks (Tasks 3.1–3.3 complete)
 
-*Not yet started.*
+**Completed:** 2026-06-05
+
+---
+
+### Task 3.1 — Benchmark Harness ✅
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `bench/harness.py` | Full timing harness — TTFT, decode tok/s, p50/p99 ITL, peak memory; CPU + GPU backends |
+| `bench/results/` | CSV + JSON output files (gitignored) |
+
+#### How it works
+
+```
+for each prompt in {short, medium, long}:
+    apply_chat_template → tokenize → token_ids
+    for each warmup run:
+        generate() — discard results
+    for each measured run:
+        t_start = perf_counter()
+        for token in generate(...):
+            timestamps.append(perf_counter())
+        TTFT  = timestamps[0] - t_start
+        ITLs  = [t[i] - t[i-1] for i in 1..N]
+        tok/s = (N-1) / sum(ITLs)
+write JSON + CSV to bench/results/
+```
+
+`time_generate()` wraps the `generate()` generator with external timestamps — no changes to the generation loop itself. This keeps the measurement layer cleanly separated from the engine.
+
+#### Metrics explained
+
+| Metric | What it measures | Why it matters |
+|--------|-----------------|----------------|
+| **TTFT** (time to first token) | Wall time from request to first generated token | User-perceived latency for interactive use |
+| **Decode tok/s** | Tokens generated per second after first token | Throughput — how fast text streams |
+| **p50 ITL** | Median inter-token latency | "Typical" per-step cost |
+| **p99 ITL** | 99th-percentile inter-token latency | Tail latency — worst-case jitter |
+| **Peak memory** | RSS in MB (CPU) or `max_memory_allocated()` (GPU) | Memory footprint of the full engine |
+
+**Why p99 and not mean ITL?** Mean hides outlier steps (e.g., the first decode step after a long prefill, or GC pauses). p99 exposes the worst-case jitter a user would observe.
+
+#### Tokenization bug found and fixed
+
+`tokenizer.apply_chat_template(messages, add_generation_prompt=True)` returns a `BatchEncoding` dict (not a list of ints) when using the fast Rust-backed tokenizer. Iterating over a `BatchEncoding` yields the string keys (`"input_ids"`, `"attention_mask"`), not token IDs. This caused `len(token_ids) == 2` and a `TypeError` when constructing a torch tensor.
+
+**Fix:** use `tokenize=False` to get a string, then `tokenizer.encode(string)` to get a plain `list[int]`. Same pattern used in the CLI and noted in Phase 0.3 findings.
+
+```python
+# Wrong — returns BatchEncoding on fast tokenizer
+token_ids = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+
+# Correct
+prompt_str = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+token_ids  = tokenizer.encode(prompt_str)
+```
+
+---
+
+### Task 3.2 — GPU Engine Port ✅
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `engine/components_gpu.py` | All 5 Llama components in PyTorch fp16 on CUDA |
+| `engine/model_gpu.py` | `LlamaModelGPU` — same `prefill`/`decode_step` interface, returns CPU numpy |
+| `engine/cache.py` | `KVCacheGPU` added — fp16 torch tensors, mirrors `KVCache` interface |
+| `engine/loader.py` | `load_weights_gpu()` — loads fp16 tensors directly to `cuda:0` |
+| `engine/scheduler.py` | `make_cache()` dispatch — GPU model returns `KVCacheGPU`, CPU model unchanged |
+| `tests/test_components_gpu.py` | 7 fast GPU tests — synthetic inputs, skip if no CUDA |
+| `tests/test_gpu_model.py` | 3 slow GPU tests — real weights, valid logits + cache mechanics |
+
+#### Key design decisions
+
+**fp16 weights, fp32 compute where needed.** Weights stored as fp16 (half the memory of fp32). Operations that accumulate error — RMSNorm, RoPE rotation, attention scores — upcast to fp32 internally, then cast back to fp16. This prevents numerical blowup while keeping memory footprint small.
+
+```python
+# rms_norm_gpu: compute in fp32, return fp16
+x32 = x.float()
+rms = torch.sqrt(x32.pow(2).mean(dim=-1, keepdim=True) + eps)
+return ((x32 / rms) * weight.float()).half()
+```
+
+**RoPE tables kept fp32.** cos/sin tables used for position encoding need full float32 precision — the small angular differences at high positions are what RoPE uses to distinguish positions. Storing them fp16 degrades position accuracy beyond ~512 tokens.
+
+**Returns CPU numpy from prefill/decode_step.** The existing `greedy` sampler uses `np.argmax`. Rather than writing a GPU-aware sampler, the GPU model transfers the final logit vector (128,256 × 2 bytes = 256 KB) to CPU before returning. The transfer cost is ~0.1ms — negligible vs ~12ms decode step. Keeps all downstream code (sampler, scheduler, CLI, server) unchanged.
+
+**`make_cache()` dispatch in scheduler.** Instead of importing `KVCacheGPU` in `scheduler.py` (which would create a hard torch dependency), the scheduler checks `hasattr(model, 'make_cache')`. GPU model provides the method; CPU model does not. The scheduler falls back to the original `KVCache` construction. Zero changes to any existing code paths.
+
+#### How NumPy → PyTorch translation works
+
+| NumPy | PyTorch equivalent |
+|-------|-------------------|
+| `np.zeros(shape, dtype=np.float32)` | `torch.zeros(shape, dtype=torch.float16, device="cuda:0")` |
+| `np.concatenate([a, b], axis=-1)` | `torch.cat([a, b], dim=-1)` |
+| `np.repeat(x, n, axis=1)` | `torch.repeat_interleave(x, n, dim=1)` |
+| `np.matmul(a, b)` | `torch.matmul(a, b)` or `a @ b` |
+| `np.triu(np.full(..., -inf), k=k)` | `torch.triu(torch.full(..., float("-inf")), diagonal=k)` |
+| Manual softmax (subtract max, exp, divide) | `torch.nn.functional.softmax(x, dim=-1)` |
+| `1.0 / (1.0 + np.exp(-x))` → SiLU | `torch.nn.functional.silu(x)` |
+| `x[:, np.newaxis, :]` | `x[:, None, :]` (identical syntax) |
+
+#### Build and environment issues
+
+**`module load anaconda3` required before `conda activate llm`.** The PACE Python 3.11 module ships without pip. Conda env `llm` created with `conda create -n llm python=3.11`. Must load anaconda3 module first each session.
+
+**`pip install accelerate` required for `device_map` in transformers.** `AutoModelForCausalLM.from_pretrained(..., device_map="cuda:0")` requires the `accelerate` package as a backend for device placement. Not listed as a transformers dependency in older versions.
+
+**Test OOM fix.** The original slow test loaded both CPU (fp32, ~5 GB RAM) and GPU (fp16, ~2.4 GB VRAM) weights simultaneously. The interactive node killed the process. Fix: slow tests only load GPU weights and verify sanity (finite logits, valid token IDs, correct cache advancement) — CPU vs GPU correctness is already proven by the 7 fast component tests that compare GPU vs CPU output on synthetic inputs.
+
+**fp16 precision in tests.** Tests use `scale = 0.02` on random weights to keep intermediate values small (< 1.0). Without scaling, matmul chains produce values in the 50–100 range, where fp16's ~3 decimal digits of precision gives absolute errors of ~0.1–0.2. `atol=1e-2` holds for scaled inputs; fails for unscaled large values.
+
+#### Benchmark results — our GPU engine on A100
+
+| Prompt | Prompt tokens | Decode tok/s | p50 ITL (ms) | p99 ITL (ms) |
+|--------|--------------|-------------|------------|------------|
+| short  | 40           | ~79         | 12.6       | 13.2       |
+| medium | 46           | ~79         | 12.6       | 12.8       |
+| long   | 57           | ~80         | 12.5       | 12.8       |
+
+TTFT: ~0.01s for all prompts (small prompt sizes). Hardware: NVIDIA A100 40GB, CUDA 12.9.1.
+
+---
+
+### Task 3.3 — HF Transformers Baseline ✅
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `bench/baseline_hf.py` | HF transformers fp16 baseline — per-token timing loop, same prompts as harness |
+
+#### How it works
+
+Rather than calling `model.generate()` (which generates all tokens before returning), the baseline drives inference one step at a time using the `past_key_values` KV cache API. This gives accurate per-token timestamps for ITL measurement:
+
+```python
+past_key_values = None
+cur_ids = input_ids
+for _ in range(max_tokens):
+    out = model(cur_ids, past_key_values=past_key_values, use_cache=True)
+    past_key_values = out.past_key_values          # reuse KV cache
+    next_id = int(out.logits[0, -1].argmax())      # greedy
+    timestamps.append(time.perf_counter())
+    cur_ids = torch.tensor([[next_id]], device="cuda:0")
+    if next_id in {128001, 128008, 128009}: break
+```
+
+`out.past_key_values` is the HF equivalent of our `KVCacheGPU` — a tuple of (K, V) tensors per layer that HF manages internally.
+
+#### Benchmark results — HF transformers on A100
+
+| Prompt | Prompt tokens | Decode tok/s | p99 ITL (ms) |
+|--------|--------------|-------------|------------|
+| short  | 40           | ~83         | 12.8       |
+| medium | 46           | ~84         | 12.1       |
+| long   | 57           | ~84         | 12.0       |
+
+Hardware: NVIDIA A100 40GB, CUDA 12.9.1, transformers fp16.
+
+#### Our engine vs HF transformers
+
+| Metric | Our engine | HF transformers | Delta |
+|--------|-----------|----------------|-------|
+| Decode tok/s | ~79 | ~84 | −6% |
+| p99 ITL (ms) | ~13.2 | ~12.1 | +9% |
+
+**Why is HF ~6% faster?** HF transformers uses fused CUDA kernels for attention (Flash Attention or torch SDPA) and fused LayerNorm. Our engine calls separate matmuls and applies RoPE/softmax as distinct ops — each kernel launch has overhead, and intermediate results are written to/from GPU memory between ops. This is expected and honest: HF is a mature library, our engine is a from-scratch reference implementation at this stage.
+
+**This delta is the baseline.** Phase 4 differentiators (quantization, paged KV, custom CUDA kernel) will each produce a before/after delta measured against this number.
+
+#### Warnings logged (harmless)
+
+```
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[transformers] The attention mask and the pad token id were not set...
+```
+
+Both are cosmetic. The `torch_dtype` deprecation is a transformers version difference — functionality unchanged. The attention mask warning is expected: Llama has no pad token (noted in Phase 0.3), so HF warns but sets `pad_token_id` to EOS and proceeds correctly.
+
+---
+
+### Phase 3 benchmark summary (A100, tasks 3.1–3.3)
+
+| Backend | Decode tok/s | p99 ITL (ms) | Notes |
+|---------|-------------|------------|-------|
+| Our engine (GPU fp16) | ~79 | ~13 | Phase 3.2 |
+| HF transformers (fp16) | ~84 | ~12 | Phase 3.3 |
+| llama.cpp (CUDA) | TBD | TBD | Phase 3.4 — pending build |
+
+Task 3.4 (llama.cpp baseline) in progress — requires building llama.cpp with `DGGML_CUDA=ON` on PACE and converting weights to GGUF.
 
 ---
 
