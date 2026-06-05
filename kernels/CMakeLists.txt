@@ -16,8 +16,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nanobind)
 
-find_package(nanobind CONFIG REQUIRED)
-
 # CUDA kernel object
 add_library(add_one_kernel OBJECT add_one_kernel.cu)
 set_target_properties(add_one_kernel PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
