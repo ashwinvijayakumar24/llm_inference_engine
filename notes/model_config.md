@@ -24,10 +24,41 @@ HF repo: `meta-llama/Llama-3.2-1B-Instruct`
 
 ## Special Token IDs
 
-| Token | ID |
-|-------|-----|
-| BOS | 128000 |
-| EOS | 128001, 128008, 128009 (multiple valid EOS tokens) |
+| Token | ID | String |
+|-------|-----|--------|
+| BOS | 128000 | `<\|begin_of_text\|>` |
+| EOS (primary) | 128009 | `<\|eot_id\|>` (end-of-turn — what `tok.eos_token_id` returns) |
+| EOS (alt) | 128001 | `<\|end_of_text\|>` |
+| EOS (alt) | 128008 | `<\|eom_id\|>` |
+| pad | None | no pad token defined |
+
+**Stop condition in generation:** halt when any of {128001, 128008, 128009} is sampled.
+
+## Chat Template Structure
+
+`apply_chat_template` injects a system turn with date context automatically. Token sequence starts:
+```
+128000  <|begin_of_text|>
+128006  <|start_header_id|>
+9125    system
+128007  <|end_header_id|>
+271     \n\n
+... system content tokens ...
+128009  <|eot_id|>
+128006  <|start_header_id|>
+78191   user   (or "assistant" for model turns)
+128007  <|end_header_id|>
+271     \n\n
+... user content tokens ...
+128009  <|eot_id|>
+128006  <|start_header_id|>
+78191   assistant
+128007  <|end_header_id|>
+271     \n\n
+        ← generation starts here (add_generation_prompt=True)
+```
+
+**Engine usage path:** `apply_chat_template(messages, tokenize=False)` → string → `tok.encode(text, add_special_tokens=False)`.
 
 ## RoPE Scaling — IMPORTANT ⚠️
 

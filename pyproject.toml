@@ -33,3 +33,4 @@ include = ["engine*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers   = ["slow: marks tests as slow — skip with -m 'not slow'"]

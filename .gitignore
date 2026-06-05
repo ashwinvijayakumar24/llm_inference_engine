@@ -13,6 +13,7 @@ dist/
 *.dylib
 .DS_Store
 notes/*.pkl
-tests/fixtures/
+tests/fixtures/*.pkl
 *.csv
 *.log
+bench/results/
