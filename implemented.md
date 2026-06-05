@@ -153,15 +153,98 @@ The system turn is injected automatically by the template (with a "Cutting Knowl
 
 ---
 
-## Phase 0.4 — PACE Environment Bootstrap
+## Phase 0.4 — PACE Environment Bootstrap ✅
 
-*Not yet completed — parallel track on PACE Phoenix.*
+**Completed:** 2026-06-05
+
+#### What was done
+
+| Step | Result |
+|------|--------|
+| SSH into Phoenix, confirmed `paceship-simpliearn` account active | ✅ |
+| `salloc --partition=interactive-cpu2 --gres=gpu:a100:1` — A100 visible in `nvidia-smi` | ✅ |
+| `module load cuda/12.9.1` — `nvcc --version` confirmed | ✅ |
+| Compiled and ran `kernels/hello.cu` — 2 blocks × 4 threads printed from device | ✅ |
+| `~/ps-simpliearn-0` writable — used as persistent project storage | ✅ |
+
+#### Environment notes
+
+- **CUDA version:** 12.9.1 (highest 12.x available; CUDA 13 skipped — too new, less ecosystem support)
+- **Python:** loaded via `module load anaconda3` → `conda create -n llm python=3.11` — the PACE Python 3.11 module ships without pip, so conda is required
+- **Storage:** code and weights live in `~/ps-simpliearn-0/llm_inference_engine` (persistent project storage, 1 TB). Never use `/scratch/` — auto-deleted after 60 days.
+- **Workflow:** SSH key auth set up (`~/.ssh/pace_key`) so `ssh pace` works without password
+
+#### hello.cu output (confirms GPU alive)
+```
+Hello from GPU block 0, thread 0
+Hello from GPU block 0, thread 1
+Hello from GPU block 0, thread 2
+Hello from GPU block 0, thread 3
+Hello from GPU block 1, thread 0
+Hello from GPU block 1, thread 1
+Hello from GPU block 1, thread 2
+Hello from GPU block 1, thread 3
+```
+
+#### Why test hello.cu before writing real kernels?
+CUDA build toolchains (`nvcc`, `module` system, device drivers) can fail silently or with confusing errors unrelated to your actual code. A trivial "does the GPU print?" test confirms the entire stack — driver, toolkit, device visibility — before any real work is at stake.
 
 ---
 
-## Phase 0.5 — nanobind Round-Trip
+## Phase 0.5 — nanobind Round-Trip ✅
 
-*Not yet completed — depends on 0.4.*
+**Completed:** 2026-06-05
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `kernels/hello.cu` | Trivial GPU kernel — 2 blocks × 4 threads, each prints block/thread ID |
+| `kernels/add_one_kernel.cu` | CUDA kernel: `data[i] += 1.0f` across all elements |
+| `kernels/bindings.cpp` | nanobind module exposing `add_one` (CPU) and `add_one_cuda` (CUDA) to Python |
+| `kernels/CMakeLists.txt` | CMake build: FetchContent nanobind v2.1.0, compiles `.cu` + `.cpp` into `engine_kernels.so` |
+| `scripts/build_kernels.sh` | One-command build: `cmake ../kernels -DCMAKE_CUDA_ARCHITECTURES=80 && cmake --build .` |
+| `scripts/test_bindings.py` | Verifies CPU and CUDA paths return `input + 1` correctly |
+
+#### Test results
+```
+PASS add_one (CPU)
+PASS add_one_cuda (CUDA)
+All binding tests passed.
+```
+
+#### Build issues encountered and fixed
+
+**1. `find_package(nanobind)` after `FetchContent_MakeAvailable(nanobind)` — conflict**
+`FetchContent_MakeAvailable` already makes nanobind's CMake functions available in scope. Calling `find_package(nanobind CONFIG REQUIRED)` after it tries to find a *system-installed* nanobind package (which doesn't exist) and fails. Fix: remove the redundant `find_package` line.
+
+**2. Missing `-fPIC` — `can not be used when making a shared object`**
+Python extension modules are shared objects (`.so`). All compiled objects linked into them must be compiled with position-independent code (`-fPIC`). The CUDA OBJECT library was missing `POSITION_INDEPENDENT_CODE ON`.
+
+**3. `undefined symbol: __cudaRegisterLinkedBinary` — separable compilation mismatch**
+CUDA separable compilation (`CUDA_SEPARABLE_COMPILATION ON`) requires an explicit device-link step that CMake's `nanobind_add_module` doesn't perform. Fix: compile `add_one_kernel.cu` directly into `nanobind_add_module` alongside `bindings.cpp` — no separate OBJECT library needed. CMake handles the CUDA compilation internally and the symbol is resolved correctly.
+
+#### Why nanobind over pybind11?
+nanobind is the successor to pybind11 by the same author (Wenzel Jakob). It has ~4× smaller binary size, faster compile times, and a cleaner API for NumPy array interop (`nb::ndarray`). For a project that will have multiple CUDA kernels bound to Python, these properties matter.
+
+#### How the C++↔Python NumPy round-trip works
+
+```
+Python (NumPy array)
+  → nanobind casts to nb::ndarray<nb::numpy, float, nb::ndim<1>>
+  → .data() gives raw float* pointer (zero-copy — same memory)
+  → CUDA: cudaMemcpy H→D, kernel runs on GPU, cudaMemcpy D→H
+  → Python sees modified array (in-place for CPU, copy-back for CUDA)
+```
+
+The key insight: nanobind gives direct access to the NumPy buffer's raw pointer without copying. For the CPU path, the operation is truly in-place. For the CUDA path, we must explicitly copy to GPU memory, run the kernel, and copy back — there is no unified memory here.
+
+#### CUDA_ARCHITECTURES=80 — why?
+`80` is the compute capability of the A100 (Ampere). Setting this explicitly avoids CMake compiling PTX for every architecture, which dramatically speeds up build time. For H100 (Hopper) it would be `90`. Always match to your target GPU.
+
+#### Phase 0 milestone ✅
+- Mac toolchain: loads Llama 3.2 1B weights, tokenizes, full forward pass matches HF oracle, 45/45 tests passing
+- PACE toolchain: A100 visible, CUDA 12.9.1 loaded, `nvcc` compiles, nanobind round-trips NumPy through a CUDA kernel correctly
 
 ---
 
