@@ -16,17 +16,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nanobind)
 
-# CUDA kernel object
-add_library(add_one_kernel OBJECT add_one_kernel.cu)
-set_target_properties(add_one_kernel PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    POSITION_INDEPENDENT_CODE ON)
-target_include_directories(add_one_kernel PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-
-# Python extension
+# Python extension — compile CUDA kernel directly into the module
 nanobind_add_module(engine_kernels
     bindings.cpp
-    $<TARGET_OBJECTS:add_one_kernel>
+    add_one_kernel.cu
 )
+set_target_properties(engine_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(engine_kernels PRIVATE CUDA::cudart)
 target_include_directories(engine_kernels PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
