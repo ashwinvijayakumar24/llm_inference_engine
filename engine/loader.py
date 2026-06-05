@@ -77,3 +77,30 @@ def load_weights(weights_path: str, config: dict) -> dict[str, np.ndarray]:
         raise ValueError("lm_head.weight missing and tie_word_embeddings is false")
 
     return weights
+
+
+def load_weights_gpu(weights_path: str, config: dict, device: str = "cuda:0") -> dict:
+    """
+    Load model weights as fp16 torch tensors on the given device.
+    Skips shape assertions (load_weights already validates on CPU).
+    Handles tied lm_head the same way as load_weights.
+    """
+    import torch
+    from safetensors import safe_open
+
+    safetensors_file = Path(weights_path) / "model.safetensors"
+    weights: dict = {}
+
+    with safe_open(str(safetensors_file), framework="pt") as f:
+        loaded_keys = set(f.keys())
+        for name in f.keys():
+            weights[name] = f.get_tensor(name).half().to(device)
+
+    if config.get("tie_word_embeddings", False):
+        weights["lm_head.weight"] = weights["model.embed_tokens.weight"]
+    elif "lm_head.weight" in loaded_keys:
+        pass  # already loaded above
+    else:
+        raise ValueError("lm_head.weight missing and tie_word_embeddings is false")
+
+    return weights

@@ -176,23 +176,25 @@ def main():
     parser.add_argument("--results-dir", default="bench/results", help="Output directory")
     args = parser.parse_args()
 
-    if args.backend == "gpu":
-        raise NotImplementedError(
-            "GPU backend not yet implemented — complete engine/model_gpu.py on PACE first."
-        )
-
     print("Loading model...", flush=True)
 
     from transformers import AutoTokenizer
-
-    from engine.loader import load_config, load_weights
-    from engine.model import LlamaModel
+    from engine.loader import load_config
     from engine.sampler import greedy
 
     config    = load_config(args.weights)
-    weights   = load_weights(args.weights, config)
-    model     = LlamaModel(weights, config)
     tokenizer = AutoTokenizer.from_pretrained(args.weights)
+
+    if args.backend == "gpu":
+        from engine.loader import load_weights_gpu
+        from engine.model_gpu import LlamaModelGPU
+        weights = load_weights_gpu(args.weights, config)
+        model   = LlamaModelGPU(weights, config)
+    else:
+        from engine.loader import load_weights
+        from engine.model import LlamaModel
+        weights = load_weights(args.weights, config)
+        model   = LlamaModel(weights, config)
 
     meta = _hw_metadata()
     print(f"Hardware: {meta['platform']}")

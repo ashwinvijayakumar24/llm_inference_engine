@@ -23,12 +23,11 @@ def generate(
 
     sampler_fn: callable that takes logits (vocab,) and returns a token ID int.
     """
-    cache = KVCache(
-        n_layers   = model.n_layers,
-        max_seq    = max_seq,
-        n_kv_heads = model.n_kv,
-        head_dim   = model.head_dim,
-    )
+    if hasattr(model, "make_cache"):
+        cache = model.make_cache(max_seq)
+    else:
+        cache = KVCache(n_layers=model.n_layers, max_seq=max_seq,
+                        n_kv_heads=model.n_kv, head_dim=model.head_dim)
 
     # Prefill: process the full prompt, get logits for the last position
     logits  = model.prefill(token_ids, cache)

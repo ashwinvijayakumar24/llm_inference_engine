@@ -18,3 +18,16 @@ class KVCache:
 
     def advance(self, n: int = 1) -> None:
         self.pos += n
+
+
+class KVCacheGPU:
+    """GPU KV cache using fp16 torch tensors — mirrors KVCache interface."""
+
+    def __init__(self, n_layers: int, max_seq: int, n_kv_heads: int, head_dim: int, device: str = "cuda:0"):
+        import torch
+        self.k   = torch.zeros((n_layers, max_seq, n_kv_heads, head_dim), dtype=torch.float16, device=device)
+        self.v   = torch.zeros_like(self.k)
+        self.pos = 0
+
+    def advance(self, n: int = 1) -> None:
+        self.pos += n
