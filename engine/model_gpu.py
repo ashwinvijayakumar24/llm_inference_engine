@@ -20,7 +20,8 @@ EOS_IDS = {128001, 128008, 128009}
 
 
 class LlamaModelGPU:
-    def __init__(self, weights: dict, config: dict, device: str = "cuda:0"):
+    def __init__(self, weights: dict, config: dict, device: str = "cuda:0",
+                 use_cuda_attn: bool = False, cuda_attn_version: str = "v3"):
         self.weights  = weights
         self.config   = config
         self.device   = device
@@ -37,6 +38,19 @@ class LlamaModelGPU:
             rope_scaling = config.get("rope_scaling"),
             device       = device,
         )
+
+        # Optional custom CUDA decode kernel. Set up the callable once here so the
+        # decode loop just passes it through. None => PyTorch decode path.
+        self._decode_kernel = None
+        if use_cuda_attn:
+            import sys
+            from pathlib import Path
+            root = Path(__file__).resolve().parent.parent
+            sys.path.insert(0, str(root / "build"))
+            sys.path.insert(0, str(root / "kernels"))
+            from attn_reference import attention_decode
+            ver = cuda_attn_version
+            self._decode_kernel = lambda q, k, v, scale: attention_decode(q, k, v, scale, version=ver)
 
     def make_cache(self, max_seq: int = 2048) -> KVCacheGPU:
         return KVCacheGPU(self.n_layers, max_seq, self.n_kv, self.head_dim, self.device)
@@ -62,6 +76,7 @@ class LlamaModelGPU:
                 self.cos, self.sin, positions,
                 self.n_heads, self.n_kv, self.head_dim,
                 kv_cache=kv_cache, layer_idx=i,
+                decode_kernel=self._decode_kernel,
             )
             x = x + h
             h = rms_norm_gpu(x, w[f"{p}.post_attention_layernorm.weight"], self.eps)
@@ -129,6 +144,7 @@ class LlamaModelGPU:
                 self.cos, self.sin, positions,
                 self.n_heads, self.n_kv, self.head_dim,
                 kv_cache=kv_cache, layer_idx=i,
+                decode_kernel=self._decode_kernel,
             )
             x = x + h
             h = rms_norm_gpu(x, w[f"{p}.post_attention_layernorm.weight"], self.eps)

@@ -20,6 +20,7 @@ sys.path.insert(0, str(_ROOT / "build"))
 sys.path.insert(0, str(_ROOT / "kernels"))
 
 cuda_only = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+slow = pytest.mark.slow
 
 try:
     import engine_kernels  # noqa: F401
@@ -110,3 +111,34 @@ def test_gqa_mapping(version):
         expected = float(h // groups + 1)
         assert torch.allclose(out[h], torch.full_like(out[h], expected), atol=1e-2), \
             f"{version} head {h} read wrong KV head (got {out[h,0].item()}, expected {expected})"
+
+
+# ---------------------------------------------------------------------------
+# Slow — end-to-end identity vs PyTorch decode path (real weights)
+# ---------------------------------------------------------------------------
+
+@cuda_only
+@needs_kernels
+@slow
+@pytest.mark.parametrize("version", ["v3"])
+def test_end_to_end_greedy_identical(version):
+    """
+    Greedy tokens from generate() must be identical with the CUDA kernel ON vs
+    OFF. Both models share the same weights dict (no double load / OOM).
+    """
+    from engine.loader import load_config, load_weights_gpu
+    from engine.model_gpu import LlamaModelGPU
+    from engine.sampler import greedy
+    from engine.scheduler import generate
+
+    config  = load_config("weights")
+    weights = load_weights_gpu("weights", config)
+
+    model_off = LlamaModelGPU(weights, config, use_cuda_attn=False)
+    model_on  = LlamaModelGPU(weights, config, use_cuda_attn=True, cuda_attn_version=version)
+
+    prompt = [128000, 9906, 358, 1097]
+    toks_off = list(generate(model_off, prompt, greedy, max_tokens=20))
+    toks_on  = list(generate(model_on,  prompt, greedy, max_tokens=20))
+
+    assert toks_off == toks_on, f"{version}: kernel changed output\noff={toks_off}\non ={toks_on}"

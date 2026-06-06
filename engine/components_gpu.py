@@ -111,10 +111,16 @@ def gqa_attention_gpu(
     head_dim: int,
     kv_cache=None,
     layer_idx: int | None = None,
+    decode_kernel=None,
 ) -> torch.Tensor:
     """
     Grouped-Query Attention — GPU fp16 version.
     Mirrors gqa_attention() from components.py exactly.
+
+    decode_kernel: optional callable (q2d, k, v, scale) -> out2d. When provided
+    and seq==1 (the decode hot path), the scores->softmax->@V core is computed by
+    the custom CUDA kernel instead of PyTorch. Projection, RoPE, cache write, and
+    o_proj are unchanged. Prefill (seq>1) and the no-kernel path are untouched.
     """
     seq    = x.shape[0]
     groups = n_heads // n_kv_heads
@@ -138,6 +144,19 @@ def gqa_attention_gpu(
         k_full = k
         v_full = v
 
+    scale = 1.0 / (head_dim ** 0.5)
+
+    # --- Custom CUDA kernel path (decode hot path only) ---
+    if decode_kernel is not None and seq == 1:
+        # Kernel expects (n_kv_heads, kv_seq, head_dim); cache slice is
+        # (kv_seq, n_kv_heads, head_dim) — transpose to match.
+        kt = k_full.transpose(0, 1).contiguous()
+        vt = v_full.transpose(0, 1).contiguous()
+        q2d = q[0].contiguous()                          # (n_heads, head_dim)
+        out = decode_kernel(q2d, kt, vt, scale)          # (n_heads, head_dim)
+        out = out.reshape(1, n_heads * head_dim)
+        return linear(out, o_w)
+
     kv_seq = k_full.shape[0]
 
     k_full = torch.repeat_interleave(k_full, groups, dim=1)   # (kv_seq, n_heads, head_dim)
@@ -147,7 +166,6 @@ def gqa_attention_gpu(
     k_full = k_full.transpose(0, 1)   # (n_heads, kv_seq, head_dim)
     v_full = v_full.transpose(0, 1)
 
-    scale  = 1.0 / (head_dim ** 0.5)
     scores = torch.matmul(q.float(), k_full.float().transpose(1, 2)) * scale  # fp32 for stability
 
     if seq > 1:
