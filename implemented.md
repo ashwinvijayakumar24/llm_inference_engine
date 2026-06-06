@@ -1085,9 +1085,34 @@ A from-scratch kernel *matching* production SDPA (not beating — honest) is a s
 
 ---
 
-## Phase 5 — Polish
+### Phase 4 outcome
 
-*Not yet started.*
+Two of three planned features shipped, fully tested and benchmarked: **quantization (4.1)** and the **custom CUDA attention kernel (4.4)**. Continuous batching (4.2) was deliberately **deferred to future work** — the simple per-sequence-cache version adds an architecture signal but no throughput-scaling number (true scaling needs a batched-GEMM step, a separate multi-session effort with concurrency-bug risk). Per the project's guiding principle, a polished 2–3-feature engine beats a half-built 5-feature one. The decision is documented as future work, which itself signals knowing where the project stops and why.
+
+---
+
+## Phase 5 — Polish ✅
+
+**Completed:** 2026-06-05
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `README.md` | Recruiter-facing: highlights, architecture, from-scratch boundary, benchmark tables, quickstart, future work |
+| `RESUME.md` | Tight resume bullets with real A100 numbers + interview-prep notes |
+
+#### Why the README matters
+
+Depth that isn't legible is wasted. `implemented.md` is the deep build log (for me / for interview prep); the README is the 2-minute version for a recruiter who will not read code — architecture diagram, the from-scratch boundary, the three benchmark tables (engine vs baselines, quantization, CUDA kernel), and an honest framing of the llama.cpp gap and the Amdahl observation. The future-work section names continuous batching, fused int8 GEMM, paged KV, and speculative decoding — signalling awareness of where the project stops.
+
+#### Final project status
+
+✅ Phases 0–3: from-scratch forward pass (HF-validated), KV cache, sampling, CLI, OpenAI-compatible server, GPU port, baselines vs HF + llama.cpp
+✅ Phase 4.1: int8/int4 quantization (−39% mem, +0.14 ppl for int8)
+✅ Phase 4.4: custom CUDA decode-attention kernel (33× over naive, matches SDPA)
+✅ Phase 5: README + resume bullets
+⏭️ Deferred to future work: continuous batching, paged KV, fused low-precision GEMM, speculative decoding
 
 ---
 
