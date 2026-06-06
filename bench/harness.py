@@ -193,6 +193,8 @@ def main():
     parser.add_argument("--quant",       default="none", choices=["none", "int8", "int4"],
                         help="GPU weight quantization (gpu backend only)")
     parser.add_argument("--group-size",  type=int, default=128, help="int4 group size")
+    parser.add_argument("--cuda-attn",   default="off", choices=["off", "v1", "v2", "v3"],
+                        help="Custom CUDA decode-attention kernel (gpu backend only)")
     args = parser.parse_args()
 
     print("Loading model...", flush=True)
@@ -215,7 +217,9 @@ def main():
             weights = load_weights_gpu_quant(args.weights, config, mode=args.quant,
                                              group_size=args.group_size)
         weight_mem_mb = round(_weight_mem_mb(weights), 1)
-        model = LlamaModelGPU(weights, config)
+        use_kernel = args.cuda_attn != "off"
+        model = LlamaModelGPU(weights, config, use_cuda_attn=use_kernel,
+                              cuda_attn_version=(args.cuda_attn if use_kernel else "v3"))
     else:
         from engine.loader import load_weights
         from engine.model import LlamaModel
@@ -231,9 +235,11 @@ def main():
 
     rows = run_benchmark(model, tokenizer, greedy, args.max_tokens, args.n_warmup, args.n_runs)
 
-    label = args.backend if args.quant == "none" else f"{args.backend}_{args.quant}"
+    label = args.backend
+    if args.quant != "none":   label += f"_{args.quant}"
+    if args.cuda_attn != "off": label += f"_attn{args.cuda_attn}"
     for row in rows:
-        row.update({"backend": label, "quant": args.quant,
+        row.update({"backend": label, "quant": args.quant, "cuda_attn": args.cuda_attn,
                     "weight_mem_mb": weight_mem_mb, **meta})
 
     write_results(rows, label, Path(args.results_dir))
