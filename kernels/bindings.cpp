@@ -17,6 +17,10 @@ void launch_attention_decode_v2(
     const __half* Q, const __half* K, const __half* V, __half* out,
     int n_heads, int n_kv_heads, int kv_seq, int head_dim, float scale);
 
+void launch_attention_decode_v3(
+    const __half* Q, const __half* K, const __half* V, __half* out,
+    int n_heads, int n_kv_heads, int kv_seq, int head_dim, float scale);
+
 // CPU version
 nb::ndarray<nb::numpy, float, nb::ndim<1>>
 add_one(nb::ndarray<nb::numpy, float, nb::ndim<1>> arr) {
@@ -74,6 +78,19 @@ void attention_decode_v2(
     cudaDeviceSynchronize();
 }
 
+void attention_decode_v3(
+    uintptr_t q_ptr, uintptr_t k_ptr, uintptr_t v_ptr, uintptr_t out_ptr,
+    int n_heads, int n_kv_heads, int kv_seq, int head_dim, float scale)
+{
+    launch_attention_decode_v3(
+        reinterpret_cast<const __half*>(q_ptr),
+        reinterpret_cast<const __half*>(k_ptr),
+        reinterpret_cast<const __half*>(v_ptr),
+        reinterpret_cast<__half*>(out_ptr),
+        n_heads, n_kv_heads, kv_seq, head_dim, scale);
+    cudaDeviceSynchronize();
+}
+
 NB_MODULE(engine_kernels, m) {
     m.def("add_one", &add_one, "Add 1 to each element (CPU)");
     m.def("add_one_cuda", &add_one_cuda, "Add 1 to each element (CUDA)");
@@ -81,4 +98,6 @@ NB_MODULE(engine_kernels, m) {
           "Decode attention v1 (one thread per head, streaming softmax)");
     m.def("attention_decode_v2", &attention_decode_v2,
           "Decode attention v2 (head_dim threads per head, shared-mem reduction)");
+    m.def("attention_decode_v3", &attention_decode_v3,
+          "Decode attention v3 (split-KV flash-decoding + warp-shuffle reduction)");
 }

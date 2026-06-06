@@ -46,7 +46,7 @@ def _rand_inputs(kv_seq, seed):
     return q, k, v
 
 
-VERSIONS = ["v1", "v2"]
+VERSIONS = ["v1", "v2", "v3"]
 
 
 @cuda_only
