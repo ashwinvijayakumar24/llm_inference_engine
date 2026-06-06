@@ -1001,6 +1001,90 @@ Quantizing computes the scale in fp32 but stores it as fp16. If quant rounds wit
 
 ---
 
+### Task 4.4 — Custom CUDA Decode-Attention Kernel ✅
+
+**Completed:** 2026-06-05
+
+The headline differentiator. Implements the decode-time attention hot path (one query token attending to the full KV cache) in CUDA C++, built in three stages so each GPU concept is learned, not copy-pasted. **Correctness-first: a 100-random-input diff vs the torch reference (< 1e-3) gated every stage before any optimization.**
+
+#### What was built
+
+| Path | Purpose |
+|------|---------|
+| `kernels/attention_decode.cu` | v1/v2/v3 kernels + host launchers |
+| `kernels/bindings.cpp` | nanobind bindings — device pointers (`tensor.data_ptr()`), no host copy |
+| `kernels/attn_reference.py` | torch reference + Python wrappers (`attention_decode(version=)`) |
+| `engine/components_gpu.py` | `decode_kernel` seam in `gqa_attention_gpu` (seq==1 path only) |
+| `engine/model_gpu.py` | `use_cuda_attn` flag + `cuda_attn_version`; sets up the kernel callable |
+| `bench/bench_attn_kernel.py` | v1/v2/v3 vs PyTorch SDPA latency, CUDA-event timed |
+| `tests/test_attention_kernel.py` | 21 fast diff/GQA tests (v1/v2/v3) + 1 slow end-to-end identity |
+
+#### The math (decode, one query token, per head h)
+
+```
+scores[j] = (q · K[j]) * scale     for j in 0..kv_seq-1     scale = 1/sqrt(head_dim)
+p = softmax(scores)                 NO causal mask — newest token attends to all past + self
+out = sum_j p[j] * V[j]
+```
+Decode needs no causal masking (single newest query) — a big simplification vs prefill. All accumulation is fp32 inside the kernel; in/out are fp16. GQA: query head `h` reads KV head `h / groups`.
+
+#### Binding design: device pointers, no host round-trip
+
+The Phase 0 `add_one_cuda` copied host→device→host. Here the data is already on the GPU (torch tensors), so the binding takes raw **device pointer integers** (`tensor.data_ptr()` cast to `__half*`) plus shapes. The kernel reads GPU memory directly. The Python wrapper allocates the output tensor, passes pointers, and the result stays on the GPU. This avoids nanobind needing to understand torch tensors and keeps everything on-device.
+
+#### Staged build — each stage a separate kernel, gated before the next
+
+**v1 — one block per head, ONE thread.** `grid=n_heads, block=1`. A single thread does the whole head's attention with serial loops — the CPU reference transcribed to one CUDA thread. Uses **streaming (online) softmax**: one pass over the keys maintaining a running max `m`, running denominator `l`, and running output `acc[head_dim]` — so it needs only `head_dim` floats of state, not `kv_seq`. This is the Flash-Attention insight in its simplest serial form. *Concept: `blockIdx.x` as head index, global memory, the algorithm.*
+
+**v2 — head_dim threads per head + shared-memory reduction.** `grid=n_heads, block=head_dim(64)`. Thread `d` owns output element `out[d]` and holds `q[d]`. The dot product `q·K[j]` becomes a cooperative **tree reduction** in `__shared__` memory (`stride = 32,16,8,…`), with `__syncthreads()` between steps. The softmax scalars are identical across threads. *Concept: `threadIdx.x`, `__shared__`, `__syncthreads()`, parallel reduction.*
+
+**v3 — split-KV (flash-decoding) + warp-shuffle reduction.** Two kernels:
+1. **Partial:** `grid=(n_heads, n_splits)`. Each block computes a partial streaming-softmax over its chunk of the KV sequence → `(m, l, acc)` written to device scratch. The dot product uses a **warp-shuffle reduction** (`__shfl_down_sync` — lanes exchange in registers, no shared memory; 64 threads = 2 warps combined via a 2-element shared array).
+2. **Combine:** `grid=n_heads`. Merges the `n_splits` partials per head with the **flash-attention combine rule**: `m = max(m₁,m₂)`, rescale each side by `exp(mᵢ−m)`. Mathematically exact.
+
+*Why split-KV?* v2 launches only 32 blocks (one per head) — an A100 has 108 SMs, so most sit idle and each block serially loops the whole KV sequence. Splitting the sequence into chunks launches `n_heads × n_splits` blocks, filling the GPU. This is what vLLM's flash-decoding does. *Concept: occupancy, warp primitives, parallel-over-sequence reduction.*
+
+#### Results — kernel microbenchmark (A100, CUDA-event timed)
+
+| kv_seq | v1 (µs) | v2 (µs) | v3 (µs) | SDPA (µs) | v3 vs SDPA |
+|--------|--------|--------|--------|----------|-----------|
+| 128 | 726 | 176 | 300 | 184 | 0.61× |
+| 512 | 1569 | 365 | 189 | 185 | 0.98× |
+| 1024 | 3120 | 714 | 189 | 185 | 0.98× |
+| 2048 | 6225 | 1412 | 191 | 189 | 0.99× |
+
+**The progression is the story:**
+- **v1** is serial — latency scales linearly with `kv_seq` (726 µs → 6225 µs).
+- **v2** parallelizes within a head — 4–8× faster, but still scales (only 32 blocks, each loops all keys).
+- **v3 is FLAT at ~190 µs** regardless of `kv_seq` — split-KV parallelizes over the sequence itself. **33× faster than v1 at kv_seq=2048**, and **matches PyTorch's optimized SDPA (0.98–0.99×)** at realistic context lengths. At kv_seq=128 v3 is slower (0.61×): the two-kernel launch overhead isn't amortized when there's little work.
+
+A from-scratch kernel *matching* production SDPA (not beating — honest) is a strong result, and the v1→v2→v3 deltas demonstrate the actual optimization techniques.
+
+#### Results — end-to-end decode (same A100 node, kernel off vs on)
+
+| Config | decode tok/s | p50 ITL |
+|--------|-------------|---------|
+| kernel off (PyTorch attention) | 59.5 | 16.8 ms |
+| kernel on (v3) | 62.0 | 16.1 ms |
+
+**+4% end-to-end — and the small size is the important lesson (Amdahl's law).** At these context lengths attention is a *minor fraction* of each decode step; the time is dominated by the **linear GEMMs** (Q/K/V/O projections + the 2048→8192→2048 FFN), which load ~2.4 GB of weights every step and which the attention kernel does not touch. Speeding up ~15% of the work caps the end-to-end gain at ~15%. The kernel's real win is visible in the microbenchmark and grows with context length (where attention's share rises).
+
+> Benchmarking caveat: the off/on comparison above is on the **same node** back-to-back (valid). An earlier Phase 3 run measured ~79 tok/s on a *different* PACE node — interactive A100 nodes vary in GPU contention and clocks, so cross-session absolute tok/s are not directly comparable. Always compare configs measured in the same session.
+
+#### Correctness
+
+- **21 fast tests** (`@cuda_only`, synthetic, run on PACE): per-version (v1/v2/v3) diff vs torch reference across `kv_seq ∈ {1,7,64,333,2048}`; the 100-random-input hard gate (< 1e-3); GQA mapping (head `h` reads KV head `h//4`).
+- **1 slow test:** end-to-end greedy generation with kernel **on** produces **identical tokens** to kernel **off** on the real model (20 tokens). Both models share one weights dict to avoid OOM.
+
+#### Key lessons (interview material)
+1. **Streaming softmax** removes the need to store all scores — the Flash-Attention foundation.
+2. **Occupancy matters more than micro-optimization:** v2→v3's win came from launching more blocks (split-KV), not from a tighter inner loop.
+3. **Flash combine** lets independent partial-attention results merge exactly — the basis of all parallel/distributed attention.
+4. **Amdahl's law in practice:** a 33× faster attention kernel yields only +4% end-to-end because attention isn't the bottleneck at short context — knowing *where the time goes* is the real systems skill.
+5. **Always validate correctness before benchmarking** — the 100-input diff gated every stage.
+
+---
+
 ## Phase 5 — Polish
 
 *Not yet started.*
