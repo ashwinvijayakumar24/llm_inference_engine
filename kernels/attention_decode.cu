@@ -91,3 +91,77 @@ void launch_attention_decode_v1(
     attention_decode_v1_kernel<<<n_heads, 1>>>(
         Q, K, V, out, n_heads, n_kv_heads, kv_seq, head_dim, scale, groups);
 }
+
+// ---------------------------------------------------------------------------
+// v2: one block per head, head_dim THREADS per block. Thread d owns output
+// element out[d] and holds q[d] in a register. The score q·K[j] is a reduction
+// across the head_dim threads, done cooperatively via shared memory + a tree
+// reduction. The streaming-softmax scalars (m, l, corr, p) are identical in
+// every thread (same inputs), so each thread just updates its own acc[d].
+//
+// New CUDA concepts vs v1: threadIdx.x, __shared__ memory, __syncthreads(),
+// parallel tree reduction.
+
+__global__ void attention_decode_v2_kernel(
+    const __half* __restrict__ Q,
+    const __half* __restrict__ K,
+    const __half* __restrict__ V,
+    __half* __restrict__ out,
+    int n_heads, int n_kv_heads, int kv_seq, int head_dim,
+    float scale, int groups)
+{
+    int h = blockIdx.x;                 // one block == one query head
+    int d = threadIdx.x;                // one thread == one head dimension
+    if (h >= n_heads || d >= head_dim) return;
+
+    int kv_head = h / groups;
+    const __half* q   = Q + (size_t)h * head_dim;
+    const __half* Kh  = K + (size_t)kv_head * kv_seq * head_dim;
+    const __half* Vh  = V + (size_t)kv_head * kv_seq * head_dim;
+    __half* o         = out + (size_t)h * head_dim;
+
+    float qd = __half2float(q[d]);      // this thread's slice of q
+
+    __shared__ float sdata[MAX_HEAD_DIM];   // scratch for the per-j reduction
+
+    // Streaming-softmax state (each thread tracks its own copies of the scalars;
+    // they stay identical because every thread sees the same reduced score).
+    float m = -INFINITY;
+    float l = 0.0f;
+    float acc = 0.0f;                   // this thread owns acc[d]
+
+    for (int j = 0; j < kv_seq; j++) {
+        const __half* kj = Kh + (size_t)j * head_dim;
+        const __half* vj = Vh + (size_t)j * head_dim;
+
+        // Cooperative dot product: each thread contributes one term, then a
+        // tree reduction sums them into sdata[0].
+        sdata[d] = qd * __half2float(kj[d]);
+        __syncthreads();
+        for (int stride = head_dim >> 1; stride > 0; stride >>= 1) {
+            if (d < stride) sdata[d] += sdata[d + stride];
+            __syncthreads();
+        }
+        float s = sdata[0] * scale;     // all threads read the reduced score
+        __syncthreads();                // done with sdata before next iteration
+
+        // Online softmax update (identical scalars in every thread).
+        float m_new = fmaxf(m, s);
+        float corr  = expf(m - m_new);
+        float p     = expf(s - m_new);
+        l   = l * corr + p;
+        acc = acc * corr + p * __half2float(vj[d]);
+        m   = m_new;
+    }
+
+    o[d] = __float2half(acc / l);
+}
+
+void launch_attention_decode_v2(
+    const __half* Q, const __half* K, const __half* V, __half* out,
+    int n_heads, int n_kv_heads, int kv_seq, int head_dim, float scale)
+{
+    int groups = n_heads / n_kv_heads;
+    attention_decode_v2_kernel<<<n_heads, head_dim>>>(
+        Q, K, V, out, n_heads, n_kv_heads, kv_seq, head_dim, scale, groups);
+}

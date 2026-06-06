@@ -47,11 +47,12 @@ def _check_inputs(q, k, v):
     return q, k, v
 
 
-def attention_decode_v1(q, k, v, scale):
+def attention_decode(q, k, v, scale, version="v1"):
     """
-    Call the v1 CUDA kernel. Shapes:
+    Call a CUDA decode-attention kernel. Shapes:
         q: (n_heads, head_dim)  k,v: (n_kv_heads, kv_seq, head_dim)
     Returns out (n_heads, head_dim) fp16 on the same device.
+    version: "v1" | "v2" | "v3"
     """
     import engine_kernels
 
@@ -60,8 +61,14 @@ def attention_decode_v1(q, k, v, scale):
     n_kv, kv_seq, _   = k.shape
     out = torch.empty(n_heads, head_dim, dtype=torch.float16, device=q.device)
 
-    engine_kernels.attention_decode_v1(
+    fn = getattr(engine_kernels, f"attention_decode_{version}")
+    fn(
         q.data_ptr(), k.data_ptr(), v.data_ptr(), out.data_ptr(),
         n_heads, n_kv, kv_seq, head_dim, float(scale),
     )
     return out
+
+
+# Back-compat alias.
+def attention_decode_v1(q, k, v, scale):
+    return attention_decode(q, k, v, scale, version="v1")

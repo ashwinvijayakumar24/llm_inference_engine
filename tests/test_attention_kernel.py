@@ -46,47 +46,53 @@ def _rand_inputs(kv_seq, seed):
     return q, k, v
 
 
+VERSIONS = ["v1", "v2"]
+
+
 @cuda_only
 @needs_kernels
+@pytest.mark.parametrize("version", VERSIONS)
 @pytest.mark.parametrize("kv_seq", [1, 7, 64, 333, 2048])
-def test_v1_matches_reference_across_seqlens(kv_seq):
+def test_matches_reference_across_seqlens(version, kv_seq):
     """Diff kernel vs torch reference at several kv_seq lengths."""
-    from attn_reference import attention_decode_reference, attention_decode_v1
+    from attn_reference import attention_decode_reference, attention_decode
 
     q, k, v = _rand_inputs(kv_seq, seed=kv_seq)
     ref = attention_decode_reference(q, k, v, SCALE)
-    got = attention_decode_v1(q, k, v, SCALE)
+    got = attention_decode(q, k, v, SCALE, version=version)
 
     diff = (got.float() - ref.float()).abs().max().item()
-    assert diff < 1e-3, f"kv_seq={kv_seq}: max-abs-diff {diff:.2e} >= 1e-3"
+    assert diff < 1e-3, f"{version} kv_seq={kv_seq}: max-abs-diff {diff:.2e} >= 1e-3"
 
 
 @cuda_only
 @needs_kernels
-def test_v1_hard_gate_100_random_inputs():
+@pytest.mark.parametrize("version", VERSIONS)
+def test_hard_gate_100_random_inputs(version):
     """Task 4.4.3 hard gate: 100 random inputs, every one must pass < 1e-3."""
-    from attn_reference import attention_decode_reference, attention_decode_v1
+    from attn_reference import attention_decode_reference, attention_decode
 
     worst = 0.0
     for seed in range(100):
         kv_seq = 1 + (seed * 37) % 512          # spread 1..512
         q, k, v = _rand_inputs(kv_seq, seed=1000 + seed)
         ref = attention_decode_reference(q, k, v, SCALE)
-        got = attention_decode_v1(q, k, v, SCALE)
+        got = attention_decode(q, k, v, SCALE, version=version)
         diff = (got.float() - ref.float()).abs().max().item()
         worst = max(worst, diff)
-        assert diff < 1e-3, f"seed={seed} kv_seq={kv_seq}: diff {diff:.2e} >= 1e-3"
-    print(f"\n  worst diff across 100 inputs: {worst:.2e}")
+        assert diff < 1e-3, f"{version} seed={seed} kv_seq={kv_seq}: diff {diff:.2e} >= 1e-3"
+    print(f"\n  {version} worst diff across 100 inputs: {worst:.2e}")
 
 
 @cuda_only
 @needs_kernels
-def test_v1_gqa_mapping():
+@pytest.mark.parametrize("version", VERSIONS)
+def test_gqa_mapping(version):
     """
     Query head h must read KV head h//groups. Build K/V where each KV head has a
     distinct constant value; the output per query head reveals which KV head it used.
     """
-    from attn_reference import attention_decode_v1
+    from attn_reference import attention_decode
 
     groups = N_HEADS // N_KV   # 4
     kv_seq = 4
@@ -99,8 +105,8 @@ def test_v1_gqa_mapping():
         v[kvh] = float(kvh + 1)
     k = torch.zeros(N_KV, kv_seq, HEAD_DIM, dtype=torch.float16, device=DEV)
 
-    out = attention_decode_v1(q, k, v, SCALE).float()
+    out = attention_decode(q, k, v, SCALE, version=version).float()
     for h in range(N_HEADS):
         expected = float(h // groups + 1)
         assert torch.allclose(out[h], torch.full_like(out[h], expected), atol=1e-2), \
-            f"head {h} read wrong KV head (got {out[h,0].item()}, expected {expected})"
+            f"{version} head {h} read wrong KV head (got {out[h,0].item()}, expected {expected})"
