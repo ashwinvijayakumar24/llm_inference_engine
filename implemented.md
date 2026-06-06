@@ -4,6 +4,75 @@ This document tracks every component built in the LLM inference engine — what 
 
 ---
 
+## 📊 Results Summary — All Numbers in One Place
+
+Everything accomplished and every benchmark number. All measured on **NVIDIA A100 40GB** (GT PACE Phoenix), Llama 3.2 1B Instruct, fp16 unless noted. Detailed methodology in the per-phase sections below.
+
+### What was accomplished
+
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| 0 | Repo, weights, tokenizer, PACE A100 + CUDA 12.9.1 + nanobind toolchain | ✅ |
+| 1 | From-scratch forward pass (RoPE, GQA, RMSNorm, SwiGLU) — HF-validated | ✅ |
+| 2 | KV cache, sampling (greedy/temp/top-k/top-p), CLI, OpenAI-compatible server | ✅ |
+| 3 | GPU port (PyTorch fp16), benchmark harness, baselines vs HF + llama.cpp | ✅ |
+| 4.1 | int8/int4 weight-only quantization | ✅ |
+| 4.4 | Custom CUDA decode-attention kernel (v1→v2→v3) | ✅ |
+| 5 | README + resume bullets | ✅ |
+| 4.2 | Continuous batching | ⏭️ deferred (future work) |
+
+### Correctness milestones
+
+| Check | Result |
+|-------|--------|
+| Per-layer hidden states vs HF oracle | max-abs-diff < 5e-3 |
+| Final logits vs HF | max-abs-diff < 1e-3, **argmax exact at every position** |
+| 32 greedy tokens vs HF `generate(do_sample=False)` | **bit-identical** |
+| KV-cache generation vs no-cache | **identical tokens** |
+| CUDA kernel vs torch reference (100+ random inputs) | max-abs-diff < 1e-3 |
+| CUDA kernel end-to-end (on vs off) | **identical greedy tokens** |
+| int8 model first-token argmax vs fp16 | **match** |
+| Total tests | 26 (P1) + 45 (P2) + GPU/quant/kernel suites, all passing |
+
+### Benchmark 1 — Engine vs baselines (decode throughput, fp16)
+
+| Backend | Decode tok/s | p99 ITL | Notes |
+|---------|-------------|---------|-------|
+| **This engine** | ~79 | ~13 ms | from-scratch reference |
+| HuggingFace `transformers` | ~84 | ~12 ms | fused kernels (~6% faster) |
+| `llama.cpp` (CUDA) | ~390 | ~2.6 ms | mature hand-optimized C++ (~5×) |
+
+### Benchmark 2 — Quantization (memory & quality)
+
+| Mode | Weight memory | Δ memory | Perplexity | Δ perplexity |
+|------|--------------|----------|-----------|-------------|
+| fp16 | 2357 MB | — | 16.28 | — |
+| **int8** | 1430 MB | **−39%** | 16.42 | **+0.14** |
+| int4 (g128) | 980 MB | −58% | 22.23 | +5.95 |
+
+*int8 quantized linear weights drop exactly 2× (int4: 4×); total drop is diluted by the fp16 128k-vocab embedding/LM-head. Win is memory, not speed (on-the-fly dequant).*
+
+### Benchmark 3 — Custom CUDA decode-attention kernel (latency, µs)
+
+| kv_seq | v1 (serial) | v2 (shared-mem) | v3 (split-KV) | PyTorch SDPA | v3 vs SDPA |
+|--------|------------|----------------|--------------|--------------|-----------|
+| 128 | 726 | 176 | 300 | 184 | 0.61× |
+| 512 | 1569 | 365 | 189 | 185 | 0.98× |
+| 1024 | 3120 | 714 | 189 | 185 | 0.98× |
+| 2048 | 6225 | 1412 | 191 | 189 | 0.99× |
+
+*v3 is **flat in sequence length** (split-KV), **33× faster than naive v1 at kv_seq=2048**, and **matches PyTorch SDPA (0.99×)**. End-to-end decode +4% (same node, kernel on vs off) — attention is not the decode bottleneck at these lengths (Amdahl).*
+
+### Headline numbers for resume
+
+- From-scratch engine, HF-validated **<1e-3 logit error, exact greedy match**, within **~6% of HF** decode throughput (A100)
+- Custom CUDA kernel: **33× over naive**, **matches PyTorch SDPA (0.99×)**, validated <1e-3 across 100+ inputs
+- int8 quantization: **−39% weight memory, +0.14 perplexity**
+
+> Benchmarking caveat: interactive A100 nodes vary (contention/clocks); compare configs measured in the **same session**. The ~79 baseline and the kernel off/on (59.5→62) are from different sessions — within-session comparisons are the valid ones.
+
+---
+
 ## Phase 0 — Setup
 
 ### 0.1 — Repo + Python Toolchain ✅
