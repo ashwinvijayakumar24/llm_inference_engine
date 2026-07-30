@@ -21,19 +21,31 @@ def main():
     parser.add_argument("--n-runs",      type=int, default=3)
     parser.add_argument("--weights",     default="weights")
     parser.add_argument("--results-dir", default="bench/results")
+    parser.add_argument("--attn-impl",   default="sdpa", choices=["sdpa", "eager", "flash_attention_2"],
+                        help="HF attention implementation. Pinned explicitly — the default "
+                             "varies by transformers version, and it decides the comparison.")
     args = parser.parse_args()
 
     from pathlib import Path
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from bench.harness import PROMPTS, write_results, _hw_metadata, _percentile
 
-    print("Loading HF model...", flush=True)
+    print(f"Loading HF model (transformers {transformers.__version__}, "
+          f"attn_implementation={args.attn_impl})...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(args.weights)
     model     = AutoModelForCausalLM.from_pretrained(
-        args.weights, torch_dtype=torch.float16, device_map="cuda:0"
+        args.weights,
+        torch_dtype=torch.float16,
+        device_map="cuda:0",
+        attn_implementation=args.attn_impl,
     )
     model.eval()
-    print("Model loaded.", flush=True)
+    # Confirm what actually loaded — from_pretrained can fall back silently.
+    loaded_impl = getattr(model.config, "_attn_implementation", "unknown")
+    print(f"Model loaded. Active attention implementation: {loaded_impl}", flush=True)
+    if loaded_impl != args.attn_impl:
+        print(f"  WARNING: requested {args.attn_impl}, got {loaded_impl}", flush=True)
 
     rows = []
 
@@ -95,7 +107,7 @@ def main():
             rows.append({"prompt_key": prompt_key, "run": i + 1, **result})
 
     for row in rows:
-        row.update({"backend": "hf_transformers", **_hw_metadata()})
+        row.update({"backend": "hf_transformers", "attn_impl": loaded_impl, **_hw_metadata()})
 
     write_results(rows, "hf_transformers", Path(args.results_dir))
 

@@ -14,9 +14,11 @@ dist/
 .DS_Store
 notes/*.pkl
 tests/fixtures/*.pkl
-*.csv
 *.log
-bench/results/
+
+# bench/results/ is tracked on purpose — benchmark numbers need committed
+# artifacts, not just prose. Large downloaded corpora are not.
+bench/wikitext2_*.txt
 
 # Personal prep material — deliberately not part of the public repo.
 # (Previously this was a blanket `*.md` ignore, which also excluded the

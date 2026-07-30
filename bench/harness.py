@@ -67,12 +67,36 @@ def _weight_mem_mb(weights: dict) -> float:
 
 
 def _hw_metadata() -> dict:
-    return {
+    """
+    Environment stamped into every results row.
+
+    Library versions are recorded because the engine-vs-HF comparison is only
+    interpretable if you know which transformers version (and therefore which
+    default attention implementation) the baseline ran against.
+    """
+    meta = {
         "hostname":   platform.node(),
         "platform":   platform.platform(),
         "python_ver": platform.python_version(),
         "numpy_ver":  np.__version__,
     }
+
+    try:
+        import torch
+        meta["torch_ver"] = torch.__version__
+        meta["cuda_ver"]  = torch.version.cuda or "cpu"
+        if torch.cuda.is_available():
+            meta["gpu_name"] = torch.cuda.get_device_name(0)
+    except ImportError:
+        pass
+
+    try:
+        import transformers
+        meta["transformers_ver"] = transformers.__version__
+    except ImportError:
+        pass
+
+    return meta
 
 
 # ---------------------------------------------------------------------------

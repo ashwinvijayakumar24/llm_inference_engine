@@ -12,8 +12,8 @@ A from-scratch inference engine for **Llama 3.2 1B Instruct** — implementing t
 ## Highlights
 
 - **Full transformer forward pass from scratch** — RoPE (with Llama-3 frequency scaling), grouped-query attention, RMSNorm, SwiGLU FFN, tied output projection — all hand-implemented in NumPy and validated against a HuggingFace oracle to **< 1e-3 logit error, exact greedy-token match**.
-- **Custom CUDA decode-attention kernel** — built in 3 stages (serial → shared-memory reduction → split-KV flash-decoding with warp-shuffle reductions). The final kernel is **33× faster than the naive version** and **matches PyTorch SDPA (0.98–0.99×)** on A100, validated to < 1e-3 vs reference across 100+ random inputs.
-- **Int8 / Int4 weight-only quantization** — int8 cuts weight memory **39%** for only **+0.14 perplexity**.
+- **Custom CUDA decode-attention kernel** — built in 3 stages (serial → shared-memory reduction → split-KV flash-decoding with warp-shuffle reductions). The final kernel **matches PyTorch SDPA (0.98–0.99×)** at 512–2048 KV length on A100, validated to < 1e-3 vs reference across 100+ random inputs.
+- **Int8 / Int4 weight-only quantization** — int8 cuts weight memory **39%** (2357 → 1430 MB) for **+0.14 perplexity**.
 - **KV cache, sampling (greedy/temp/top-k/top-p), CLI, and an OpenAI-compatible streaming HTTP server.**
 - **Benchmark harness** measuring TTFT, decode tok/s, p50/p99 inter-token latency, and memory — characterized against HuggingFace `transformers` and `llama.cpp` on identical hardware.
 
@@ -43,8 +43,8 @@ prompt
 | `engine/model.py` / `model_gpu.py` | forward-pass wiring (CPU reference / GPU) |
 | `engine/cache.py` | KV cache (NumPy + GPU fp16) |
 | `engine/quant.py` | int8 per-channel + int4 group-wise quantization |
-| `engine/sampler.py`, `scheduler.py` | sampling + generation loop |
-| `engine/server.py`, `cli.py` | OpenAI-compatible HTTP + CLI |
+| `engine/sampler.py`, `scheduler.py` | sampling + generation loop (single request) |
+| `engine/server.py`, `cli.py` | OpenAI-compatible HTTP + CLI (single-request reference path) |
 | `kernels/attention_decode.cu` | custom CUDA decode-attention kernel (v1/v2/v3) |
 | `bench/` | benchmark harness, baselines, perplexity eval |
 
@@ -57,6 +57,10 @@ prompt
 
 ## Benchmarks (NVIDIA A100 40GB)
 
+Summary below. **[`BENCHMARKS.md`](BENCHMARKS.md) is the source of record** — full methodology (iteration counts, warmup, timing method, batch size), per-prompt tables, reproduction commands, and a stated list of known gaps.
+
+All numbers are **batch 1**, greedy decoding, single request. Nothing here describes behaviour under concurrent load.
+
 ### Engine vs. baselines (decode, fp16)
 
 | Backend | Decode tok/s | Notes |
@@ -67,6 +71,8 @@ prompt
 
 *llama.cpp is ~5× faster — expected. The value of this project is the **relative deltas of its own optimizations** and how close a from-scratch engine gets to production, not beating llama.cpp.*
 
+*Method: 128 max new tokens, 3 prompts, 1 warmup + 3 measured runs, host-clock timing (both sides sync every step). The HF baseline drives a hand-rolled `past_key_values` decode loop rather than `model.generate()`, so it mirrors this engine's loop instead of measuring `generate()` overhead. [Details →](BENCHMARKS.md#benchmark-1--engine-vs-baselines-decode-throughput-fp16)*
+
 ### Quantization (memory & quality)
 
 | Mode | Weight memory | Δ memory | Perplexity | Δ perplexity |
@@ -75,17 +81,24 @@ prompt
 | int8 | 1430 MB | **−39%** | 16.42 | **+0.14** |
 | int4 (g128) | 980 MB | −58% | 22.23 | +5.95 |
 
-*int8 is near-free in quality. int4 at group-128 is too aggressive for a 1B model (small models are sensitive). Memory drop is below the theoretical 2×/4× because the 128k-vocab embedding/LM-head stays fp16; the quantized linear weights themselves drop exactly 2×/4×.*
+*int8 is near-free in quality. int4 at group-128 is too aggressive for a 1B model (small models are sensitive). Memory drop is below the theoretical 2×/4× because the 128k-vocab embedding/LM-head stays fp16; the quantized linear weights themselves drop exactly 2×/4×. Note that quantization here **costs** throughput (~79 → ~45 → ~22 tok/s) — weights are dequantized on the fly, so the win is memory, not speed.*
+
+> **Perplexity caveat:** these were measured on a short synthetic text (`bench/computing_history.txt`), single window, no stride — **not** WikiText. The **deltas** between modes are valid (identical input, identical code path); the **absolute** values are not comparable to published perplexity numbers. Re-measurement on WikiText-2 is pending — see [BENCHMARKS.md](BENCHMARKS.md#benchmark-4--quantization-memory-and-quality).
 
 ### Custom CUDA decode-attention kernel (latency, µs)
 
 | kv_seq | v1 (serial) | v2 (shared-mem) | v3 (split-KV) | PyTorch SDPA | v3 vs SDPA |
 |--------|------------|----------------|--------------|--------------|-----------|
+| 128 | 726 | 176 | 300 | 184 | **0.61×** |
 | 512 | 1569 | 365 | 189 | 185 | 0.98× |
 | 1024 | 3120 | 714 | 189 | 185 | 0.98× |
 | 2048 | 6225 | 1412 | 191 | 189 | 0.99× |
 
-*v3 latency is **flat in sequence length** (split-KV parallelizes over the cache) — **33× faster than the naive v1 at kv_seq=2048** and matching PyTorch's optimized SDPA. End-to-end decode gains only ~4% because attention is not the bottleneck at these context lengths (the linear GEMMs dominate) — a deliberate, measured observation of where the time actually goes (Amdahl's law).*
+*v3 latency is **flat in sequence length** (split-KV parallelizes over the cache) and **matches PyTorch's optimized SDPA at 512–2048**. At kv_seq=128 it loses (0.61×) — two kernel launches plus a scratch allocation aren't amortized when there's little work.*
+
+*The "33× over v1" figure (6225 → 191 µs at kv_seq=2048) compares against a **deliberately serial baseline**: v1 launches `<<<32, 1>>>` — 32 blocks of one thread each, the CPU reference transcribed to a single CUDA thread as the first rung of the learning progression. It measures parallelism left on the table by construction, not a win over a real implementation. **The meaningful result is matching SDPA.***
+
+*End-to-end decode gains only ~4% (59.5 → 62.0 tok/s, same node). Two causes: attention is a minor fraction of a decode step at these lengths — the linear GEMMs dominate (Amdahl) — **and** the kernel's layout requirement forces a full KV-cache transpose per layer per token that the PyTorch path doesn't pay. [Both quantified →](BENCHMARKS.md#benchmark-3--kernel-end-to-end-amdahl)*
 
 ---
 
@@ -109,6 +122,8 @@ curl -N -X POST http://localhost:8000/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":40,"stream":true}'
 ```
 
+> The HTTP server is a **single-request reference path** — it demonstrates the OpenAI protocol surface and SSE streaming, and currently runs the CPU reference model. It has no queue, no batching, and no request isolation: concurrent requests serialize. Multi-request serving is deliberately out of scope here (see future work).
+
 ### GPU + CUDA kernel (NVIDIA, e.g. PACE A100)
 
 ```bash
@@ -118,9 +133,17 @@ bash scripts/build_kernels.sh                 # build the CUDA kernel module
 python bench/harness.py --backend gpu --max-tokens 128                 # baseline
 python bench/harness.py --backend gpu --cuda-attn v3 --max-tokens 128  # + custom kernel
 python bench/harness.py --backend gpu --quant int8 --max-tokens 128    # + quantization
-python -m bench.perplexity --mode int8                                 # quality eval
+python bench/baseline_hf.py --max-tokens 128 --attn-impl sdpa          # HF baseline
 python -m bench.bench_attn_kernel                                      # kernel microbench
+
+# Quality eval on a standard corpus (sliding window, WikiText-2 protocol)
+pip install -e '.[bench]'
+python scripts/fetch_wikitext2.py
+python -m bench.perplexity --mode int8 --text bench/wikitext2_test.txt \
+    --window 512 --stride 256 --max-tokens 100000
 ```
+
+Results are written to `bench/results/` as JSON + CSV, stamped with hostname, GPU, and library versions.
 
 ## Testing
 
@@ -142,6 +165,11 @@ Every optimization is validated against a correct reference **before** any speed
 - **Fused int8/int4 GEMM** — recover the throughput that on-the-fly dequant currently costs (the quantization win here is memory, not speed).
 - **Speculative decoding**, multi-GPU/tensor-parallel inference, fused prefill-attention kernel.
 
-## Implementation log
+## Going deeper
 
-`implemented.md` is a detailed per-phase build log: every component, why it was built, the concepts behind it, bugs hit and how they were fixed, and full benchmark numbers. Written as an interview-prep reference.
+- **[`BENCHMARKS.md`](BENCHMARKS.md)** — every measured number with its methodology, reproduction commands, and a stated list of known gaps.
+- **[`notes/implemented.md`](notes/implemented.md)** — per-phase build log: every component, why it was built, the concepts behind it, the bugs hit and how they were fixed, and the original run output.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Model weights are not included and are subject to Meta's Llama 3.2 license.
