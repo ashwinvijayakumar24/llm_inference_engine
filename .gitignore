@@ -18,6 +18,13 @@ tests/fixtures/*.pkl
 *.log
 bench/results/
 
-# Ignore all markdown except the root README
-*.md
-!README.md
+# Personal prep material — deliberately not part of the public repo.
+# (Previously this was a blanket `*.md` ignore, which also excluded the
+#  implementation log that README.md links to.)
+teaching/
+notes/PRD.md
+notes/TASKS.md
+CLAIMS_AUDIT.md
+SERVING_INTERFACE.md
+ENGINE_INTERVIEW_DRILL.md
+REPO_PRESENTATION.md

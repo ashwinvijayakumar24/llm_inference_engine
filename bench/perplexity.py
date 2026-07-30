@@ -50,7 +50,10 @@ def main():
     parser.add_argument("--mode",       default="fp16", choices=["fp16", "int8", "int4"])
     parser.add_argument("--group-size", type=int, default=128)
     parser.add_argument("--weights",    default="weights")
-    parser.add_argument("--text",       default="bench/wikitext_sample.txt")
+    parser.add_argument("--text",       default="bench/computing_history.txt",
+                        help="Eval text. Default is a short synthetic sample — "
+                             "deltas between modes are meaningful, the absolute "
+                             "perplexity is not comparable to published numbers.")
     parser.add_argument("--max-tokens", type=int, default=1024, help="Cap eval length")
     args = parser.parse_args()
 
