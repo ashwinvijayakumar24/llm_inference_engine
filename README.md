@@ -133,7 +133,7 @@ bash scripts/build_kernels.sh                 # build the CUDA kernel module
 python bench/harness.py --backend gpu --max-tokens 128                 # baseline
 python bench/harness.py --backend gpu --cuda-attn v3 --max-tokens 128  # + custom kernel
 python bench/harness.py --backend gpu --quant int8 --max-tokens 128    # + quantization
-python bench/baseline_hf.py --max-tokens 128 --attn-impl sdpa          # HF baseline
+python -m bench.baseline_hf --max-tokens 128 --attn-impl sdpa          # HF baseline
 python -m bench.bench_attn_kernel                                      # kernel microbench
 
 # Quality eval on a standard corpus (sliding window, WikiText-2 protocol)

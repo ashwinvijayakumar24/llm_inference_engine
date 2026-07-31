@@ -68,7 +68,7 @@ run "engine baseline (fp16)" \
     python bench/harness.py --backend gpu --max-tokens 128 --n-runs 3
 
 run "HF baseline (fp16, sdpa pinned)" \
-    python bench/baseline_hf.py --max-tokens 128 --n-runs 3 --attn-impl sdpa
+    python -m bench.baseline_hf --max-tokens 128 --n-runs 3 --attn-impl sdpa
 
 # ---------------------------------------------------------------------------
 # 2. WikiText-2 perplexity — the genuinely new measurement.

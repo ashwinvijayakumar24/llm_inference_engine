@@ -5,13 +5,23 @@ Loads Llama 3.2 1B via AutoModelForCausalLM in fp16 on cuda:0,
 runs same prompts as harness.py, writes CSV row with backend="hf_transformers".
 
 Usage (PACE only):
-    python bench/baseline_hf.py --max-tokens 128 --n-runs 3 --weights weights
+    python -m bench.baseline_hf --max-tokens 128 --n-runs 3 --weights weights
+    python bench/baseline_hf.py --max-tokens 128 --n-runs 3   # also works
 """
 
 import argparse
+import sys
 import time
+from pathlib import Path
 
 import torch
+
+# Running this as a script (`python bench/baseline_hf.py`) puts bench/ on
+# sys.path rather than the repo root, so `import bench.harness` below fails.
+# `bench` is not an installed package — pyproject only ships `engine*`.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 def main():
@@ -26,7 +36,6 @@ def main():
                              "varies by transformers version, and it decides the comparison.")
     args = parser.parse_args()
 
-    from pathlib import Path
     import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from bench.harness import PROMPTS, write_results, _hw_metadata, _percentile
