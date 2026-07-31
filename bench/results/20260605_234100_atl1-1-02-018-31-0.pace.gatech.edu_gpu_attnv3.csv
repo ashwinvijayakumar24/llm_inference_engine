@@ -1,0 +1,10 @@
+prompt_key,run,n_prompt_tokens,n_decode_tokens,ttft_s,total_s,prefill_tok_s,decode_tok_s,itl_p50_ms,itl_p99_ms,peak_mem_mb,backend,quant,cuda_attn,weight_mem_mb,hostname,platform,python_ver,numpy_ver
+short,1,40,24,0.01952,0.385828,2049.195,62.789,15.925,16.011,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+short,2,40,24,0.018693,0.383596,2139.865,63.03,15.846,16.014,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+short,3,40,24,0.018704,0.383419,2138.573,63.063,15.859,15.985,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,1,46,67,0.018601,1.080783,2473.0,62.136,16.078,16.474,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,2,46,67,0.018617,1.079717,2470.848,62.2,16.067,16.44,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,3,46,67,0.018672,1.080645,2463.576,62.148,16.068,16.491,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,1,57,128,0.018907,2.104384,3014.719,60.897,16.409,17.078,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,2,57,128,0.018808,2.106621,3030.642,60.829,16.417,17.08,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,3,57,128,0.018813,2.107392,3029.789,60.807,16.467,17.05,3402.6,gpu_attnv3,none,v3,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6

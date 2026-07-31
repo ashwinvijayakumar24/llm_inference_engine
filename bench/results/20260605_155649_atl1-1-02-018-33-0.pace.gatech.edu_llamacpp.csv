@@ -1,0 +1,4 @@
+prompt_key,run,n_prompt_tokens,n_decode_tokens,ttft_s,total_s,prefill_tok_s,decode_tok_s,itl_p50_ms,itl_p99_ms,peak_mem_mb,backend,hostname,platform,python_ver,numpy_ver
+short,1,40,128,0.0,0.0,8202.85,392.454,2.548,2.548,0.0,llamacpp,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,1,46,128,0.0,0.0,8198.998,389.574,2.567,2.567,0.0,llamacpp,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,1,57,128,0.0,0.0,11970.699,394.811,2.533,2.533,0.0,llamacpp,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6

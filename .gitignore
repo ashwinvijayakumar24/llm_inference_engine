@@ -26,6 +26,7 @@ bench/wikitext2_*.txt
 teaching/
 notes/PRD.md
 notes/TASKS.md
+notes/PACE_RUNBOOK.md
 CLAIMS_AUDIT.md
 SERVING_INTERFACE.md
 ENGINE_INTERVIEW_DRILL.md

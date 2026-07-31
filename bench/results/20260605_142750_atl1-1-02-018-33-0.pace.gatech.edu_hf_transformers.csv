@@ -1,0 +1,10 @@
+prompt_key,run,n_prompt_tokens,n_decode_tokens,ttft_s,total_s,prefill_tok_s,decode_tok_s,itl_p50_ms,itl_p99_ms,peak_mem_mb,backend,hostname,platform,python_ver,numpy_ver
+short,1,40,24,0.01304,0.289595,3067.482,83.166,11.966,12.814,2377.6,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+short,2,40,24,0.013601,0.289098,2940.954,83.486,11.95,12.451,2379.7,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+short,3,40,24,0.013048,0.287334,3065.488,83.854,11.923,12.108,2379.7,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,1,46,67,0.057426,0.843352,801.036,83.977,11.907,12.07,2382.0,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,2,46,67,0.012951,0.796424,3551.863,84.24,11.874,12.016,2383.5,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+medium,3,46,67,0.012903,0.797908,3565.127,84.076,11.889,12.035,2383.5,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,1,57,128,0.01317,1.520393,4327.963,84.261,11.862,12.011,2386.0,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,2,57,128,0.013062,1.526677,4363.856,83.905,11.908,12.082,2388.3,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
+long,3,57,128,0.013123,1.506405,4343.669,85.048,11.727,12.087,2388.3,hf_transformers,atl1-1-02-018-33-0.pace.gatech.edu,Linux-5.14.0-570.100.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6
