@@ -6,19 +6,17 @@ Source of record for all figures quoted in `README.md`.
 **Hardware:** NVIDIA A100 40GB (Georgia Tech PACE Phoenix, interactive partition), CUDA 12.9.1, fp16 unless stated.
 Correctness development on Apple M4 (CPU/NumPy); all performance numbers on A100.
 
-**Raw log:** `notes/implemented.md` — per-phase build log with the original per-prompt tables, the bugs hit, and the reasoning. Figures here are transcribed from it.
+**Artifacts:** every figure below is backed by a committed file in `bench/results/` — CSV and JSON, stamped with hostname, GPU, and library versions. `notes/implemented.md` is the per-phase build log with the original reasoning and the bugs hit along the way.
 
 ---
 
 ## Reading these numbers honestly
 
-Three caveats that apply to everything below. They are here rather than in a footnote because they change how the numbers should be read.
+Two caveats that apply to everything below. They are here rather than in a footnote because they change how the numbers should be read.
 
-**1. Cross-session absolute throughput is not comparable.** PACE interactive A100 nodes vary in GPU contention and clock behaviour. The Phase 3 baseline (~79 tok/s) and the Phase 4.4 kernel off/on pair (59.5 → 62.0 tok/s) were measured in **different sessions on different nodes**. Only same-session comparisons are valid, and each table below marks which comparison it supports.
+**1. Cross-session absolute throughput is not comparable.** PACE A100 nodes vary in contention and clock behaviour. The Phase 3 baselines (~79 tok/s) ran on node `-33-0`; the kernel off/on pair (59.5 → 62.0 tok/s) ran on `-31-0`. The node ID is in every result filename, so this is checkable rather than asserted. Only same-node comparisons are used, and each table marks which comparison it supports.
 
-**2. Benchmark 4's perplexity is not on a standard corpus.** See its section. The deltas hold; the absolute values are not comparable to published numbers.
-
-**3. Result artifacts are not committed for Benchmarks 1–3.** These were transcribed from run output into the build log rather than saved as CSV. The scripts write CSV today (`bench/results/`, no longer gitignored) — anything rerun from here forward is captured automatically. Benchmark 4's script also stamps library versions and appends to `bench/results/perplexity.csv`.
+**2. Everything is batch 1, single request.** No claim here describes behaviour under concurrent load.
 
 ---
 
@@ -56,7 +54,7 @@ TTFT was ~0.01 s for all three prompts — the prompts are short, so prefill is 
 
 ```bash
 python bench/harness.py     --backend gpu --max-tokens 128 --n-runs 3
-python bench/baseline_hf.py --max-tokens 128 --n-runs 3 --attn-impl sdpa
+python -m bench.baseline_hf --max-tokens 128 --n-runs 3 --attn-impl sdpa
 python bench/baseline_llamacpp.py
 ```
 
@@ -146,11 +144,15 @@ The split between the two causes has **not** been measured; isolating it would r
 
 **Question:** how much weight memory does int8/int4 save, and what does it cost in quality?
 
-| Mode | Weight memory | Δ memory | Perplexity* | Δ perplexity* | Decode tok/s |
+| Mode | Weight memory | Δ memory | WikiText-2 ppl | Δ ppl | Decode tok/s |
 |------|--------------|----------|-----------|-------------|-------------|
-| fp16 | 2357 MB | — | 16.28 | — | ~79 |
-| **int8** (per-channel) | 1430 MB | **−39%** | 16.42 | **+0.14** | ~45 |
-| int4 (group-128) | 980 MB | −58% | 22.23 | +5.95 | ~22 |
+| fp16 | 2357.1 MB | — | 14.3695 | — | ~79 |
+| **int8** (per-channel) | 1429.8 MB | **−39%** | 14.4134 | **+0.044** | ~45 |
+| int4 (group-128) | 979.6 MB | −58% | 18.8194 | +4.450 | ~22 |
+
+Perplexity measured on the **WikiText-2 raw test split**, sliding window 512 / stride 256, first 100,000 tokens, A100, transformers 5.10.2 / torch 2.12.0+cu130. Artifact: `bench/results/perplexity.csv`.
+
+fp16 at **14.37** is in the expected range for Llama-3.2-1B on WikiText-2 — that is the external cross-check. It corroborates the whole forward pass (tokenizer, RoPE scaling, GQA, the layer stack) against something outside this repo, which no other measurement here does.
 
 ### Memory — verified independently
 
@@ -170,25 +172,27 @@ Measured rather than assumed: `bench/harness.py:54-66` sums actual stored bytes 
 
 int8 and int4 are **slower**, not faster (~79 → ~45 → ~22 tok/s). Weights are dequantized on the fly (`engine/components_gpu.py:22-24`): reconstruct the fp16 tile, then GEMM — and int4 also unpacks nibbles. The win in this phase is **memory, not speed**. Recovering the speed requires a fused int8/int4 GEMM that multiplies directly in low precision; deliberately out of scope. The quantization *math* is what was validated here.
 
-### \* The perplexity numbers need re-measurement — read this before quoting them
+### The earlier synthetic-text measurement, and what changed
 
-The eval text was `bench/computing_history.txt` — roughly 450 words of original prose, evaluated in a **single window with no stride**. It is not WikiText, and the file was previously misnamed `wikitext_sample.txt`.
+An earlier run measured perplexity on `bench/computing_history.txt` — ~450 words of original prose, single window, no stride — in a file then misnamed `wikitext_sample.txt`. It gave fp16 16.28 / int8 16.42 / int4 22.23, i.e. **+0.14** and **+5.95**.
 
-- **The deltas (+0.14, +5.95) stand.** All three modes ran on identical input through an identical code path; the comparison between them is valid.
-- **The absolute values (16.28 / 16.42 / 22.23) are not comparable to any published perplexity** and should not be quoted as if they were.
+Both measurements agree on every conclusion: int8 is near-free, int4-g128 is unusable at 1B. But two things moved, and the direction of one is worth recording because it contradicts the reasoning used to justify the rerun:
 
-`bench/perplexity.py` now supports the standard sliding-window protocol, and `scripts/fetch_wikitext2.py` fetches the standard corpus. **Pending measurement:**
+- **The absolute perplexity fell** (16.28 → 14.37). WikiText-2 is *more* predictable for this model than the synthetic paragraph — encyclopedic prose is closer to its training distribution.
+- **The int8 penalty shrank by 3×** (+0.14 → +0.044). The prediction going in was that smooth, low-entropy synthetic text would *understate* quantization damage, since quantization noise is least likely to flip a token the model is already confident about. The opposite happened: the real corpus shows *less* damage. The synthetic number was pessimistic, not optimistic — most likely because a ~600-token sample gives a noisy delta, not because of any property of the text.
+
+The lesson is about sample size rather than text difficulty. Quote **+0.04 on WikiText-2**, and treat the earlier number as superseded.
+
+### Reproduce
 
 ```bash
 pip install -e '.[bench]'
-python scripts/fetch_wikitext2.py                       # -> bench/wikitext2_test.txt
+python scripts/fetch_wikitext2.py                       # login node — compute nodes may lack internet
 for m in fp16 int8 int4; do
   python -m bench.perplexity --mode $m --text bench/wikitext2_test.txt \
       --window 512 --stride 256 --max-tokens 100000
 done                                                    # -> bench/results/perplexity.csv
 ```
-
-Update this table and delete this note once those numbers exist.
 
 ### Why int4 fails at 1B and int8 does not
 
@@ -226,8 +230,7 @@ pytest -m slow -v                              # end-to-end identity, real weigh
 
 Stated here rather than discovered by a reader.
 
-1. **Perplexity needs re-measurement on WikiText-2** — Benchmark 4. Script and corpus fetcher are in place; the run has not happened.
-2. **Benchmarks 1–3 have no committed result artifacts.** Transcribed from run output into `notes/implemented.md`. Anything rerun from here forward writes CSV to `bench/results/`.
-3. **The original HF baseline run did not pin `attn_implementation` or record the `transformers` version.** Now fixed in the script; the recorded numbers predate the fix.
-4. **`bench/harness.py` reports host RSS as `peak_mem_mb` while `bench/baseline_hf.py` reports `torch.cuda.max_memory_allocated()`** — same column name, different quantity. Do not compare those two rows. The weight-memory figures in Benchmark 4 are a separate, reliable measurement.
-5. **Everything here is batch 1.** There is no batch dimension in the tensors, the KV cache, the causal mask, or the CUDA kernel. No claim in this document describes behaviour under concurrent load.
+1. **The June 5 HF baseline recorded no `transformers` version and no attention implementation** — visible in its CSV, and the gap that motivated pinning `--attn-impl`. That run cannot be retro-labelled; a pinned rerun is outstanding. Benchmark 1's numbers therefore rest on the inference that transformers defaulted to SDPA, not on a recorded fact.
+2. **`bench/harness.py` reports host RSS as `peak_mem_mb` while `bench/baseline_hf.py` reports `torch.cuda.max_memory_allocated()`** — same column name, different quantity. Do not compare those two rows. The weight-memory figures in Benchmark 4 are a separate, reliable measurement.
+3. **Everything here is batch 1.** There is no batch dimension in the tensors, the KV cache, the causal mask, or the CUDA kernel. No claim in this document describes behaviour under concurrent load.
+4. **The kernel end-to-end split is unmeasured.** Benchmark 3 names two causes for the ~4% gain but does not quantify their relative contribution.

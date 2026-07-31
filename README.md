@@ -13,7 +13,7 @@ A from-scratch inference engine for **Llama 3.2 1B Instruct** — implementing t
 
 - **Full transformer forward pass from scratch** — RoPE (with Llama-3 frequency scaling), grouped-query attention, RMSNorm, SwiGLU FFN, tied output projection — all hand-implemented in NumPy and validated against a HuggingFace oracle to **< 1e-3 logit error, exact greedy-token match**.
 - **Custom CUDA decode-attention kernel** — built in 3 stages (serial → shared-memory reduction → split-KV flash-decoding with warp-shuffle reductions). The final kernel **matches PyTorch SDPA (0.98–0.99×)** at 512–2048 KV length on A100, validated to < 1e-3 vs reference across 100+ random inputs.
-- **Int8 / Int4 weight-only quantization** — int8 cuts weight memory **39%** (2357 → 1430 MB) for **+0.14 perplexity**.
+- **Int8 / Int4 weight-only quantization** — int8 cuts weight memory **39%** (2357 → 1430 MB) for **+0.04 WikiText-2 perplexity**.
 - **KV cache, sampling (greedy/temp/top-k/top-p), CLI, and an OpenAI-compatible streaming HTTP server.**
 - **Benchmark harness** measuring TTFT, decode tok/s, p50/p99 inter-token latency, and memory — characterized against HuggingFace `transformers` and `llama.cpp` on identical hardware.
 
@@ -75,15 +75,17 @@ All numbers are **batch 1**, greedy decoding, single request. Nothing here descr
 
 ### Quantization (memory & quality)
 
-| Mode | Weight memory | Δ memory | Perplexity | Δ perplexity |
+| Mode | Weight memory | Δ memory | WikiText-2 ppl | Δ ppl |
 |------|--------------|----------|-----------|-------------|
-| fp16 | 2357 MB | — | 16.28 | — |
-| int8 | 1430 MB | **−39%** | 16.42 | **+0.14** |
-| int4 (g128) | 980 MB | −58% | 22.23 | +5.95 |
+| fp16 | 2357 MB | — | 14.37 | — |
+| int8 | 1430 MB | **−39%** | 14.41 | **+0.04** |
+| int4 (g128) | 980 MB | −58% | 18.82 | +4.45 |
+
+*Perplexity on the WikiText-2 raw test split, sliding window 512 / stride 256, first 100k tokens. fp16 at 14.37 sits in the expected range for Llama-3.2-1B — an external cross-check on the whole forward pass.*
 
 *int8 is near-free in quality. int4 at group-128 is too aggressive for a 1B model (small models are sensitive). Memory drop is below the theoretical 2×/4× because the 128k-vocab embedding/LM-head stays fp16; the quantized linear weights themselves drop exactly 2×/4×. Note that quantization here **costs** throughput (~79 → ~45 → ~22 tok/s) — weights are dequantized on the fly, so the win is memory, not speed.*
 
-> **Perplexity caveat:** these were measured on a short synthetic text (`bench/computing_history.txt`), single window, no stride — **not** WikiText. The **deltas** between modes are valid (identical input, identical code path); the **absolute** values are not comparable to published perplexity numbers. Re-measurement on WikiText-2 is pending — see [BENCHMARKS.md](BENCHMARKS.md#benchmark-4--quantization-memory-and-quality).
+*An earlier run on a short synthetic text gave +0.14 for int8; the WikiText-2 measurement supersedes it. Both agree on the conclusions — see [BENCHMARKS.md](BENCHMARKS.md#benchmark-4--quantization-memory-and-quality) for what changed and why.*
 
 ### Custom CUDA decode-attention kernel (latency, µs)
 
