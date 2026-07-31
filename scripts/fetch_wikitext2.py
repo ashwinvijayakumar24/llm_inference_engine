@@ -38,8 +38,21 @@ def main():
     out = Path(args.out) if args.out else Path("bench") / f"wikitext2_{args.split}.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Downloading wikitext-2-raw-v1 [{args.split}] ...", flush=True)
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split=args.split)
+    # datasets >= 5 requires a namespaced repo id; the bare "wikitext" alias
+    # fails with HfUriError. Try the canonical namespaced id first and fall
+    # back for older datasets versions.
+    last_err = None
+    ds = None
+    for repo_id in ("Salesforce/wikitext", "wikitext"):
+        try:
+            print(f"Downloading {repo_id} / wikitext-2-raw-v1 [{args.split}] ...", flush=True)
+            ds = load_dataset(repo_id, "wikitext-2-raw-v1", split=args.split)
+            break
+        except Exception as e:                      # noqa: BLE001 — report and try the next id
+            print(f"  {repo_id} failed: {type(e).__name__}: {e}", flush=True)
+            last_err = e
+    if ds is None:
+        raise SystemExit(f"Could not load WikiText-2 from any known repo id: {last_err}")
 
     # Standard treatment: concatenate all lines into one continuous document.
     # The raw split keeps original punctuation and casing (unlike the non-raw
