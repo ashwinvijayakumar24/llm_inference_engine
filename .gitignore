@@ -1,7 +1,14 @@
+# ---------------------------------------------------------------------------
+# Model weights — gated, large, never committed
+# ---------------------------------------------------------------------------
 weights/
 *.safetensors
 *.gguf
 *.bin
+
+# ---------------------------------------------------------------------------
+# Build + Python artifacts
+# ---------------------------------------------------------------------------
 __pycache__/
 *.pyc
 *.pyo
@@ -12,25 +19,32 @@ dist/
 *.so
 *.dylib
 .DS_Store
-notes/*.pkl
+
+# Generated test fixtures — regenerate with `python3 tests/oracle.py`
 tests/fixtures/*.pkl
+
+# ---------------------------------------------------------------------------
+# Benchmark data
+#
+# bench/results/ IS tracked on purpose — published numbers need committed
+# artifacts, not just prose. Only large downloaded corpora are excluded.
+# ---------------------------------------------------------------------------
+bench/wikitext2_*.txt
+bench/logs/
 *.log
 
-# bench/results/ is tracked on purpose — benchmark numbers need committed
-# artifacts, not just prose. Large downloaded corpora are not.
-bench/wikitext2_*.txt
-
-# Personal prep material — deliberately not part of the public repo.
-# (Previously this was a blanket `*.md` ignore, which also excluded the
-#  implementation log that README.md links to.)
+# ---------------------------------------------------------------------------
+# Personal working notes — planning docs, learning material, interview prep,
+# and cluster-specific runbooks. Not part of the project.
+# ---------------------------------------------------------------------------
 teaching/
-notes/PRD.md
-notes/TASKS.md
-notes/PACE_RUNBOOK.md
+docs/PRD.md
+docs/TASKS.md
+docs/MODEL.md
+docs/model_config.md
+docs/tensor_dump.txt
+docs/PACE_RUNBOOK.md
 CLAIMS_AUDIT.md
 SERVING_INTERFACE.md
 ENGINE_INTERVIEW_DRILL.md
 REPO_PRESENTATION.md
-
-# Slurm job logs
-bench/logs/

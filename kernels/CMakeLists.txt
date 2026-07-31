@@ -16,10 +16,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nanobind)
 
-# Python extension — compile CUDA kernel directly into the module
+# Python extension — compile the CUDA kernel directly into the module.
+# (Separable compilation needs an explicit device-link step that
+#  nanobind_add_module does not perform, so the .cu goes in directly.)
 nanobind_add_module(engine_kernels
     bindings.cpp
-    add_one_kernel.cu
     attention_decode.cu
 )
 set_target_properties(engine_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)

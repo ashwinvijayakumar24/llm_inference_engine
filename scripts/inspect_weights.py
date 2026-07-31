@@ -1,6 +1,6 @@
 """
 Dumps all tensor names, shapes, and dtypes from the model safetensors file.
-Output committed to notes/tensor_dump.txt.
+Prints to stdout; redirect if you want to keep the dump.
 
 Usage:
     python3 scripts/inspect_weights.py
@@ -107,7 +107,7 @@ def main():
     for line in lines[:20]:
         print(" ", line)
     if len(lines) > 20:
-        print(f"  ... ({len(lines) - 20} more in notes/tensor_dump.txt)")
+        print(f"  ... ({len(lines) - 20} more)")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-# implemented.md — Build Log & Learning Reference
+# Build Log
 
-This document tracks every component built in the LLM inference engine — what it does, why it was built, and the concepts behind it. Updated after each phase. Intended as a reference for interviews and for understanding the project end-to-end.
+This document tracks every component built in the LLM inference engine — what it does, why it was built, and the concepts behind it. Written incrementally, one entry per phase, including the bugs hit along the way and how they were resolved.
 
 ---
 
@@ -18,7 +18,7 @@ Everything accomplished and every benchmark number. All measured on **NVIDIA A10
 | 3 | GPU port (PyTorch fp16), benchmark harness, baselines vs HF + llama.cpp | ✅ |
 | 4.1 | int8/int4 weight-only quantization | ✅ |
 | 4.4 | Custom CUDA decode-attention kernel (v1→v2→v3) | ✅ |
-| 5 | README + resume bullets | ✅ |
+| 5 | README + results write-up | ✅ |
 | 4.2 | Continuous batching | ⏭️ deferred (future work) |
 
 ### Correctness milestones
@@ -96,7 +96,7 @@ Everything accomplished and every benchmark number. All measured on **NVIDIA A10
 | `tests/` | Test suite — unit tests and oracle comparisons |
 | `bench/` | Benchmark harness and result CSVs |
 | `scripts/` | One-off utility scripts (weight inspection, tokenizer checks) |
-| `notes/` | Config values, tensor shape dumps, model hyperparameters |
+| `docs/` | Build log; local working notes on config values and tensor shapes (not committed) |
 | `pyproject.toml` | Package definition and dependency list |
 | `.gitignore` | Excludes weights, build artifacts, and `__pycache__` |
 
@@ -143,8 +143,8 @@ The modern Python package spec (PEP 517/518). Replaces `setup.py`. Defines: pack
 | `MODEL.md` | Records chosen model, HF repo, and gate status |
 | `weights/` | Downloaded model files (gitignored — ~2.5 GB) |
 | `scripts/inspect_weights.py` | Opens safetensors, dumps every tensor name/shape/dtype, asserts all shapes against config |
-| `notes/tensor_dump.txt` | Full tensor name/shape/dtype output (146 tensors, committed) |
-| `notes/model_config.md` | All hyperparameters, derived shapes, RoPE scaling details |
+| `docs/tensor_dump.txt` | Full tensor name/shape/dtype output (146 tensors; local only — regenerate with `scripts/inspect_weights.py`) |
+| `docs/model_config.md` | All hyperparameters, derived shapes, RoPE scaling details (local only) |
 
 #### Key discoveries
 
@@ -152,7 +152,7 @@ The modern Python package spec (PEP 517/518). Replaces `setup.py`. Defines: pack
 
 **All weights are bfloat16.** NumPy does not support bfloat16 — the safetensors `framework="numpy"` backend fails. Use `framework="pt"` (torch) for loading. In Phase 1 reference code, cast to float32 after loading.
 
-**Llama 3 scaled RoPE ⚠️.** This is NOT standard RoPE. The model uses `rope_type="llama3"` with a frequency scaling factor of 32× for low-frequency components. Plain `rope_theta=500000` without the scaling would produce wrong positional encodings. See `notes/model_config.md` for full spec.
+**Llama 3 scaled RoPE ⚠️.** This is NOT standard RoPE. The model uses `rope_type="llama3"` with a frequency scaling factor of 32× for low-frequency components. Plain `rope_theta=500000` without the scaling would produce wrong positional encodings. See `weights/config.json` → `rope_scaling` for the full spec.
 
 #### Architecture numbers to memorize
 
@@ -265,6 +265,11 @@ CUDA build toolchains (`nvcc`, `module` system, device drivers) can fail silentl
 **Completed:** 2026-06-05
 
 #### What was built
+
+> **Note:** the toolchain smoke tests below (`hello.cu`, the `add_one` kernel and its
+> bindings, `scripts/test_bindings.py`) were removed from the repo once the real
+> decode-attention kernel landed in Phase 4.4 — they existed only to prove the
+> CUDA/nanobind toolchain worked end to end. This section records what they did.
 
 | Path | Purpose |
 |------|---------|
@@ -979,7 +984,7 @@ llama.cpp is ~5× faster than our engine. **This is expected and fine.** llama.c
 
 The project's value is not beating llama.cpp. It is:
 1. **The relative deltas our own optimizations produce** — each Phase 4 differentiator (quantization, paged KV, custom CUDA kernel) lands as a before/after delta measured against our own ~79 tok/s baseline.
-2. **How close a from-scratch engine gets to a production system.** Stating this plainly is a strength — interviewers respect honest benchmark framing over inflated claims.
+2. **How close a from-scratch engine gets to a production system.** Stating this plainly matters more than an inflated number would.
 
 The ~79 tok/s number is the **Phase 3 baseline** that every Phase 4 improvement is measured against.
 
@@ -1001,7 +1006,7 @@ CPU-vs-GPU numerical correctness is covered by the 7 fast tests in `tests/test_c
 ✅ HF transformers baseline on A100 — ~84 tok/s
 ✅ llama.cpp baseline on A100 — ~390 tok/s
 ✅ All GPU tests passing (7 fast component + 3 slow model)
-✅ First resume numbers captured — naive engine characterized against both baselines on identical hardware
+✅ First end-to-end numbers captured — engine characterized against both baselines on identical hardware
 
 The naive from-scratch engine is now characterized against HF transformers and llama.cpp on identical A100 hardware. Phase 4 differentiators each produce a measurable delta against the ~79 tok/s baseline.
 
@@ -1056,7 +1061,7 @@ Quantizing computes the scale in fp32 but stores it as fp16. If quant rounds wit
 | int8 | 1430 MB | −39% | 16.42 | **+0.14** | ~45 |
 | int4 (g128) | 980 MB | −58% | 22.23 | +5.95 | ~22 |
 
-#### Two honest findings (strong interview material)
+#### Two honest findings
 
 **1. Memory drop is less than the naive 2×/4×.** Only the 7 per-layer linear projections are quantized; `embed_tokens`/`lm_head` (~525 MB, tied) stay fp16. The *quantized linears themselves* drop exactly 2× (int8) and 4× (int4) — int8 is 1 byte vs fp16's 2, int4 is 0.5 bytes. The headline reduction (−39% / −58%) is diluted by the unquantized embedding table, which is disproportionately large for a small model with a 128k vocab. On a 7B+ model the linears dominate and the drop approaches the theoretical limit.
 
@@ -1145,7 +1150,7 @@ A from-scratch kernel *matching* production SDPA (not beating — honest) is a s
 - **21 fast tests** (`@cuda_only`, synthetic, run on PACE): per-version (v1/v2/v3) diff vs torch reference across `kv_seq ∈ {1,7,64,333,2048}`; the 100-random-input hard gate (< 1e-3); GQA mapping (head `h` reads KV head `h//4`).
 - **1 slow test:** end-to-end greedy generation with kernel **on** produces **identical tokens** to kernel **off** on the real model (20 tokens). Both models share one weights dict to avoid OOM.
 
-#### Key lessons (interview material)
+#### Key lessons
 1. **Streaming softmax** removes the need to store all scores — the Flash-Attention foundation.
 2. **Occupancy matters more than micro-optimization:** v2→v3's win came from launching more blocks (split-KV), not from a tighter inner loop.
 3. **Flash combine** lets independent partial-attention results merge exactly — the basis of all parallel/distributed attention.
@@ -1179,7 +1184,7 @@ Depth that isn't legible is wasted. `implemented.md` is the deep build log; the 
 ✅ Phases 0–3: from-scratch forward pass (HF-validated), KV cache, sampling, CLI, OpenAI-compatible server, GPU port, baselines vs HF + llama.cpp
 ✅ Phase 4.1: int8/int4 quantization (−39% mem, +0.14 ppl for int8)
 ✅ Phase 4.4: custom CUDA decode-attention kernel (33× over naive, matches SDPA)
-✅ Phase 5: README + resume bullets
+✅ Phase 5: README + results write-up
 ⏭️ Deferred to future work: continuous batching, paged KV, fused low-precision GEMM, speculative decoding
 
 ---
@@ -1205,13 +1210,13 @@ Per PRD §2, this is what counts as "from-scratch" vs "library is fine":
 | Tokenizer | | ✅ (HF tokenizers) |
 | Weight parsing | | ✅ (safetensors) |
 
-This boundary is what makes the project interview-credible: you are not reimplementing BLAS, you are implementing the model logic and the serving system.
+This boundary is what makes the project meaningful: the goal is not to reimplement BLAS, it is to implement the model logic and the serving system around it.
 
 ---
 
 ## Reference: Llama 3.2 1B Architecture
 
-Source: `weights/config.json`. Full details in `notes/model_config.md`.
+Source: `weights/config.json`.
 
 - `hidden_size` — 2048
 - `num_attention_heads` — 32

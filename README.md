@@ -46,7 +46,24 @@ prompt
 | `engine/sampler.py`, `scheduler.py` | sampling + generation loop (single request) |
 | `engine/server.py`, `cli.py` | OpenAI-compatible HTTP + CLI (single-request reference path) |
 | `kernels/attention_decode.cu` | custom CUDA decode-attention kernel (v1/v2/v3) |
-| `bench/` | benchmark harness, baselines, perplexity eval |
+| `kernels/bindings.cpp` | nanobind module — passes device pointers, no host round-trip |
+| `bench/` | benchmark harness, HF + llama.cpp baselines, perplexity eval |
+| `bench/results/` | committed benchmark artifacts (CSV/JSON) behind every number below |
+| `tests/` | oracle-based correctness suite (CPU, GPU, CUDA kernel) |
+
+### Public API
+
+```python
+from engine import LlamaModelGPU, generate, get_sampler, load_config, load_weights_gpu
+
+config  = load_config("weights")
+model   = LlamaModelGPU(load_weights_gpu("weights", config), config)
+
+for token_id in generate(model, prompt_ids, get_sampler(temp=0.0), max_tokens=64):
+    ...
+```
+
+`engine/__init__.py` declares the supported surface in `__all__`; everything else is internal. Imports are lazy, so `import engine` does not pull in torch or CUDA.
 
 ### The "from-scratch" boundary
 
@@ -170,7 +187,7 @@ Every optimization is validated against a correct reference **before** any speed
 ## Going deeper
 
 - **[`BENCHMARKS.md`](BENCHMARKS.md)** — every measured number with its methodology, reproduction commands, and a stated list of known gaps.
-- **[`notes/implemented.md`](notes/implemented.md)** — per-phase build log: every component, why it was built, the concepts behind it, the bugs hit and how they were fixed, and the original run output.
+- **[`docs/BUILD_LOG.md`](docs/BUILD_LOG.md)** — per-phase build log: every component, why it was built, the concepts behind it, the bugs hit and how they were fixed, and the original run output.
 
 ## License
 

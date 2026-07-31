@@ -6,7 +6,7 @@ Source of record for all figures quoted in `README.md`.
 **Hardware:** NVIDIA A100 40GB (Georgia Tech PACE Phoenix, interactive partition), CUDA 12.9.1, fp16 unless stated.
 Correctness development on Apple M4 (CPU/NumPy); all performance numbers on A100.
 
-**Artifacts:** every figure below is backed by a committed file in `bench/results/` — CSV and JSON, stamped with hostname, GPU, and library versions. `notes/implemented.md` is the per-phase build log with the original reasoning and the bugs hit along the way.
+**Artifacts:** every figure below is backed by a committed file in `bench/results/` — CSV and JSON, stamped with hostname, GPU, and library versions. [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md) is the per-phase build log with the original reasoning and the bugs hit along the way.
 
 ---
 
