@@ -2,3 +2,6 @@ mode,group_size,text,n_tokens,window,stride,perplexity,weight_mem_mb,hostname,pl
 fp16,,wikitext2_test.txt,100000,512,256,14.3695,2357.1,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.116.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6,2.12.0+cu130,13.0,NVIDIA A100-PCIE-40GB,5.10.2
 int8,,wikitext2_test.txt,100000,512,256,14.4134,1429.8,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.116.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6,2.12.0+cu130,13.0,NVIDIA A100-PCIE-40GB,5.10.2
 int4,128,wikitext2_test.txt,100000,512,256,18.8194,979.6,atl1-1-02-018-31-0.pace.gatech.edu,Linux-5.14.0-570.116.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6,2.12.0+cu130,13.0,NVIDIA A100-PCIE-40GB,5.10.2
+fp16,,wikitext2_test.txt,100000,512,256,14.3695,2357.1,atl1-1-01-006-11-0.pace.gatech.edu,Linux-5.14.0-570.116.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6,2.12.0+cu130,13.0,NVIDIA A100 80GB PCIe,5.10.2
+int8,,wikitext2_test.txt,100000,512,256,14.4134,1429.8,atl1-1-01-006-11-0.pace.gatech.edu,Linux-5.14.0-570.116.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6,2.12.0+cu130,13.0,NVIDIA A100 80GB PCIe,5.10.2
+int4,128,wikitext2_test.txt,100000,512,256,18.8194,979.6,atl1-1-01-006-11-0.pace.gatech.edu,Linux-5.14.0-570.116.1.el9_6.x86_64-x86_64-with-glibc2.34,3.11.15,2.4.6,2.12.0+cu130,13.0,NVIDIA A100 80GB PCIe,5.10.2

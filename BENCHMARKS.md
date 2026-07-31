@@ -40,6 +40,18 @@ Per-prompt detail:
 
 TTFT was ~0.01 s for all three prompts — the prompts are short, so prefill is not the interesting quantity here.
 
+### Confirmation run, with the attention implementation pinned
+
+The June 5 run left `attn_implementation` to the library default and recorded neither it nor the `transformers` version. A later run on node `-11-0` pins it explicitly and verifies what actually loaded (`Active attention implementation: sdpa`, transformers 5.10.2 / torch 2.12.0+cu130):
+
+| Backend | Decode tok/s | p99 ITL | Node |
+|---------|-------------|---------|------|
+| This engine | 60.8 | 16.5 ms | `-11-0` |
+| HuggingFace (SDPA, pinned) | 63.8 | 15.7 ms | `-11-0` |
+| **Gap** | **4.8%** | | |
+
+Absolute throughput is far below the `-33-0` numbers (60.8 vs ~79) — the same node-contention effect flagged above, and a good illustration of why only same-node comparisons are used. **The relative gap is the stable quantity: 5.6% on `-33-0`, 4.8% on `-11-0`.** The "within 6%" claim now holds across two independent nodes, once with the attention implementation confirmed rather than assumed.
+
 ### Methodology
 
 - **Batch size 1.** The engine has no batch dimension; this is a single-request latency benchmark, not a throughput-under-load benchmark.
@@ -47,7 +59,7 @@ TTFT was ~0.01 s for all three prompts — the prompts are short, so prefill is 
 - **`decode_tok_s` excludes prefill** — it is `(n_tokens − 1) / Σ(inter-token latencies)`, so TTFT does not contaminate it (`bench/harness.py:111`).
 - **Timing:** `time.perf_counter()` on the host around each yielded token. Valid here because both sides force a device synchronise every step — this engine at `engine/model_gpu.py:158` (`.cpu().float().numpy()`), HF at `bench/baseline_hf.py:67` (`int(...argmax())`). Neither side can hide work behind an async queue, so the host clock misses nothing on either.
 - **The HF baseline is deliberately not `model.generate()`.** It hand-rolls the decode loop with `past_key_values` and `argmax` (`bench/baseline_hf.py:61-71`) so it mirrors this engine's loop structure. Timing `generate()` would measure its wrapper overhead and flatter this engine unfairly.
-- **HF attention implementation:** now pinned to `sdpa` explicitly via `--attn-impl` (`bench/baseline_hf.py`), and the loaded implementation is verified after construction and written into the results row. *The original run did not pin it and did not record the `transformers` version — it almost certainly took the SDPA default, but that is an inference, not a measurement. Rerun to close this.*
+- **HF attention implementation:** pinned to `sdpa` via `--attn-impl` (`bench/baseline_hf.py`); the loaded implementation is read back after construction and written into the results row. The June 5 run predates this and recorded neither — closed by the confirmation run above.
 - **llama.cpp** uses `llama-bench` with synthetic prompts of matching token lengths (40/46/57) and fp16 GGUF weights. tok/s depends on sequence length rather than content, so this is a fair throughput comparison even though the prompt text differs.
 
 ### Reproduce
@@ -154,6 +166,8 @@ Perplexity measured on the **WikiText-2 raw test split**, sliding window 512 / s
 
 fp16 at **14.37** is in the expected range for Llama-3.2-1B on WikiText-2 — that is the external cross-check. It corroborates the whole forward pass (tokenizer, RoPE scaling, GQA, the layer stack) against something outside this repo, which no other measurement here does.
 
+**All three values replicated bit-identically on a second, different A100 node** (`-31-0` and `-11-0`; both runs are in `perplexity.csv`). Perplexity is a deterministic function of the weights and the eval protocol, so this is the expected result — but it confirms there is no hidden nondeterminism in the forward pass, and it is the one number here that node contention cannot move.
+
 ### Memory — verified independently
 
 These recompute exactly from `weights/config.json` (hidden 2048, 16 layers, FFN 8192, vocab 128256, `tie_word_embeddings: true`):
@@ -230,7 +244,6 @@ pytest -m slow -v                              # end-to-end identity, real weigh
 
 Stated here rather than discovered by a reader.
 
-1. **The June 5 HF baseline recorded no `transformers` version and no attention implementation** — visible in its CSV, and the gap that motivated pinning `--attn-impl`. That run cannot be retro-labelled; a pinned rerun is outstanding. Benchmark 1's numbers therefore rest on the inference that transformers defaulted to SDPA, not on a recorded fact.
-2. **`bench/harness.py` reports host RSS as `peak_mem_mb` while `bench/baseline_hf.py` reports `torch.cuda.max_memory_allocated()`** — same column name, different quantity. Do not compare those two rows. The weight-memory figures in Benchmark 4 are a separate, reliable measurement.
-3. **Everything here is batch 1.** There is no batch dimension in the tensors, the KV cache, the causal mask, or the CUDA kernel. No claim in this document describes behaviour under concurrent load.
-4. **The kernel end-to-end split is unmeasured.** Benchmark 3 names two causes for the ~4% gain but does not quantify their relative contribution.
+1. **`bench/harness.py` reports host RSS as `peak_mem_mb` while `bench/baseline_hf.py` reports `torch.cuda.max_memory_allocated()`** — same column name, different quantity. Do not compare those two rows. The weight-memory figures in Benchmark 4 are a separate, reliable measurement.
+2. **Everything here is batch 1.** There is no batch dimension in the tensors, the KV cache, the causal mask, or the CUDA kernel. No claim in this document describes behaviour under concurrent load.
+3. **The kernel end-to-end split is unmeasured.** Benchmark 3 names two causes for the ~4% gain but does not quantify their relative contribution.
