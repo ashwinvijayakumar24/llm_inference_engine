@@ -219,6 +219,17 @@ class BatchMeta:
         n = self.n_seqs
         t = self.n_tokens
 
+        # Empty batch, checked first and explicitly. Without this the checks below
+        # reach `kv_last_page_len.min()` on an empty tensor, which raises an opaque
+        # torch RuntimeError rather than saying what is actually wrong. A batch with
+        # no sequences is a scheduler bug — there is nothing to run — and it should
+        # say so.
+        assert n > 0, "BatchMeta describes an empty batch: no sequences to run"
+        assert t > 0, (
+            f"BatchMeta has {n} sequence(s) but 0 tokens. Every scheduled sequence "
+            "must contribute at least one token to the packed axis."
+        )
+
         assert self.query_lens.shape == (n,), f"query_lens {tuple(self.query_lens.shape)} != ({n},)"
         assert self.kv_lens.shape == (n,), f"kv_lens {tuple(self.kv_lens.shape)} != ({n},)"
         assert self.last_token_ix.shape == (n,), "last_token_ix must be one index per sequence"
