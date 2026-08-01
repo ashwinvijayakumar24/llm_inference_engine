@@ -177,10 +177,34 @@ Every optimization is validated against a correct reference **before** any speed
 
 ---
 
+## Serving-layer seam
+
+The engine exposes a pluggable attention/KV backend so a serving layer can supply a **paged, batched** implementation without forking this repo:
+
+```python
+from engine import AttentionBackend, BatchMeta   # importing these does not pull in torch
+
+class MyPagedBackend:                       # structural — no base class to inherit
+    def append_kv(self, layer_idx, k, v, meta: BatchMeta) -> None: ...
+    def attend(self, q, layer_idx, scale, meta: BatchMeta): ...
+
+logits = model.forward_varlen(token_ids, meta, backend)   # (n_seqs, vocab), on device
+```
+
+When a backend is supplied it owns **both** the KV write and the attention math, and the engine stops touching the KV cache entirely. Sequences are packed along one token axis (variable-length, not padded), which is what keeps every linear, norm, and FFN in the forward pass unchanged.
+
+Three things worth stating plainly:
+
+- **`prefill()` and `decode_step()` are unmodified.** `forward_varlen()` is a sibling, so every benchmark and correctness claim above still describes live code.
+- **The custom CUDA kernel is not used on a paged path.** Its nanobind ABI takes no strides, block table, or block size (`kernels/bindings.cpp`), and `Q` has no batch dimension — a paged batched kernel would be a rewrite, not an extension. The kernel remains the single-request contiguous decode path.
+- **Continuous batching, scheduling, block allocation, and eviction are deliberately *not* here.** This repo exposes the seam; the serving layer owns the policy.
+
+See [`engine/attention_backend.py`](engine/attention_backend.py) for the full contract.
+
 ## What I'd build next (future work)
 
-- **Continuous batching** — a scheduler admitting/retiring requests mid-step, with a **batched-GEMM** step (stacked sequences) for true throughput scaling.
-- **PagedAttention-style block KV cache** — eliminate per-sequence over-allocation; pairs with batching.
+- **Fused batched attention on the paged path** — the seam exists; a backend that batches efficiently is the remaining work.
+- **PagedAttention-style block KV cache** — eliminate per-sequence over-allocation. Now implementable behind `AttentionBackend` without engine changes.
 - **Fused int8/int4 GEMM** — recover the throughput that on-the-fly dequant currently costs (the quantization win here is memory, not speed).
 - **Speculative decoding**, multi-GPU/tensor-parallel inference, fused prefill-attention kernel.
 

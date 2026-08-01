@@ -62,7 +62,17 @@ class LlamaModelGPU:
 
         ids_t     = torch.tensor(token_ids, dtype=torch.long, device=self.device)
         x         = w["model.embed_tokens.weight"][ids_t]               # (seq, hidden) fp16
-        positions = torch.arange(seq, dtype=torch.long, device=self.device)
+
+        # RoPE positions continue from wherever the cache already is, rather than
+        # restarting at 0. Today this is a no-op — generate() builds a fresh cache
+        # and calls prefill exactly once (engine/scheduler.py:26-33), so pos is
+        # always 0 and arange(0, seq) == arange(seq). It matters the moment a
+        # prompt is prefilled in more than one chunk: the second chunk would
+        # otherwise be told it starts at position 0, silently corrupting RoPE for
+        # every token in it. Latent bug, fixed before anything depends on it.
+        positions = torch.arange(
+            kv_cache.pos, kv_cache.pos + seq, dtype=torch.long, device=self.device
+        )
 
         for i in range(self.n_layers):
             p = f"model.layers.{i}"
@@ -88,6 +98,81 @@ class LlamaModelGPU:
         last   = rms_norm_gpu(x[-1:], w["model.norm.weight"], self.eps)
         logits = (last @ w["lm_head.weight"].T)[0]   # (vocab,) fp16
         return logits.cpu().float().numpy()
+
+    def forward_varlen(self, token_ids, meta, backend) -> "torch.Tensor":
+        """
+        Batched forward over a ragged batch of sequences. The serving path.
+
+        Deliberately a SIBLING of prefill()/decode_step() rather than a
+        replacement. Those two keep their exact behaviour, so the engine's
+        existing correctness tests and published batch-1 benchmarks continue to
+        describe live code rather than history.
+
+        Args:
+            token_ids: (tokens,) int64 tensor ON DEVICE. All sequences' new tokens
+                       packed along one axis in sequence order — see BatchMeta.
+            meta:      BatchMeta describing the batch (engine/attention_backend.py).
+            backend:   AttentionBackend owning KV storage and attention.
+
+        Returns:
+            (n_seqs, vocab) fp16 logits, ON DEVICE — one row per sequence, taken
+            at that sequence's last token.
+
+        WHY THIS RETURNS A DEVICE TENSOR WHEN prefill() RETURNS CPU NUMPY
+        ----------------------------------------------------------------
+        prefill/decode_step end with `.cpu().float().numpy()` so the NumPy
+        sampler works unchanged — a deliberate engine choice costing ~0.1 ms
+        against a ~12 ms step. At batch 32 that same round-trip sits on the
+        critical path of every request in the batch, and sampling belongs on the
+        GPU anyway.
+
+        CONSEQUENCE THE CALLER MUST KNOW: that per-token device->host copy is
+        what currently forces a CUDA sync and makes host-clock timing of this
+        engine meaningful. Without it, `time.perf_counter()` around this call
+        measures kernel-launch queueing, not execution — timings get FASTER and
+        nothing errors. Any serving layer timing this path must use CUDA events
+        or an explicit, declared sync point.
+
+        WHY MOST OF THE FORWARD PASS IS IDENTICAL TO prefill()
+        -----------------------------------------------------
+        Compare this loop to prefill()'s: the only differences are that positions
+        arrive in `meta`, attention goes through `backend`, and the final logits
+        are a gather instead of a slice. Every linear, norm and FFN is untouched,
+        because a flattened varlen layout makes them unable to tell that more
+        than one sequence is present. That is the entire argument for varlen.
+        """
+        w = self.weights
+        tokens = int(token_ids.shape[0])
+
+        x = w["model.embed_tokens.weight"][token_ids]        # (tokens, hidden) fp16
+
+        for i in range(self.n_layers):
+            p = f"model.layers.{i}"
+            h = rms_norm_gpu(x, w[f"{p}.input_layernorm.weight"], self.eps)
+            h = gqa_attention_gpu(
+                h,
+                w[f"{p}.self_attn.q_proj.weight"],
+                w[f"{p}.self_attn.k_proj.weight"],
+                w[f"{p}.self_attn.v_proj.weight"],
+                w[f"{p}.self_attn.o_proj.weight"],
+                self.cos, self.sin, meta.positions,
+                self.n_heads, self.n_kv, self.head_dim,
+                backend=backend, layer_idx=i, meta=meta,
+            )
+            x = x + h
+            h = rms_norm_gpu(x, w[f"{p}.post_attention_layernorm.weight"], self.eps)
+            h = swiglu_ffn_gpu(h, w[f"{p}.mlp.gate_proj.weight"],
+                               w[f"{p}.mlp.up_proj.weight"], w[f"{p}.mlp.down_proj.weight"])
+            x = x + h
+
+        # Gather each sequence's last token BEFORE the lm_head projection.
+        # lm_head is (hidden, vocab) with vocab = 128256, so projecting all
+        # `tokens` rows and discarding most is the single most expensive
+        # avoidable operation in this function. During a chunked prefill nearly
+        # every row is discarded.
+        last = x[meta.last_token_ix.long()]                   # (n_seqs, hidden)
+        last = rms_norm_gpu(last, w["model.norm.weight"], self.eps)
+        return last @ w["lm_head.weight"].T                   # (n_seqs, vocab) fp16
 
     def forward_all(self, token_ids: list[int]) -> np.ndarray:
         """

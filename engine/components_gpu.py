@@ -112,6 +112,8 @@ def gqa_attention_gpu(
     kv_cache=None,
     layer_idx: int | None = None,
     decode_kernel=None,
+    backend=None,
+    meta=None,
 ) -> torch.Tensor:
     """
     Grouped-Query Attention — GPU fp16 version.
@@ -121,6 +123,16 @@ def gqa_attention_gpu(
     and seq==1 (the decode hot path), the scores->softmax->@V core is computed by
     the custom CUDA kernel instead of PyTorch. Projection, RoPE, cache write, and
     o_proj are unchanged. Prefill (seq>1) and the no-kernel path are untouched.
+
+    backend/meta: optional AttentionBackend + BatchMeta (engine/attention_backend.py).
+    When supplied, the backend owns BOTH the KV write and the attention math, and
+    this function stops touching kv_cache entirely. That is the seam a serving
+    layer injects a paged, batched implementation through.
+
+    The backend branch sits before the kv_cache logic and returns early, so every
+    line below it — the contiguous cache path, the custom CUDA kernel path, the
+    PyTorch fallback — is bit-for-bit what it was. The engine's published numbers
+    and its existing tests describe those paths and remain valid unchanged.
     """
     seq    = x.shape[0]
     groups = n_heads // n_kv_heads
@@ -133,6 +145,23 @@ def gqa_attention_gpu(
     sin_pos = sin[positions]
     q = apply_rope_gpu(q, cos_pos, sin_pos)
     k = apply_rope_gpu(k, cos_pos, sin_pos)
+
+    scale_bk = 1.0 / (head_dim ** 0.5)
+
+    # --- Pluggable backend path (paged / batched; owned by a serving layer) ---
+    # Taken before any cache logic and returns early: the backend owns storage,
+    # so `kv_cache` is never consulted and `seq` here is the packed token count
+    # across all sequences in the batch, not one sequence's length.
+    #
+    # Ordering is load-bearing. append_kv MUST complete before attend, or a
+    # decoding token cannot attend to itself — the classic off-by-one that
+    # produces fluent, subtly wrong text with no error anywhere.
+    if backend is not None:
+        if meta is None:
+            raise ValueError("gqa_attention_gpu: `backend` requires `meta` (BatchMeta)")
+        backend.append_kv(layer_idx, k, v, meta)
+        out = backend.attend(q, layer_idx, scale_bk, meta)   # (tokens, n_heads, head_dim)
+        return linear(out.reshape(seq, n_heads * head_dim), o_w)
 
     if kv_cache is not None:
         read_len = kv_cache.pos + seq

@@ -31,6 +31,12 @@ __all__ = [
     # KV cache
     "KVCache",
     "KVCacheGPU",
+    # Pluggable attention/KV backend — the seam a serving layer injects through.
+    # Importing these does NOT pull in torch (they are a Protocol and a dataclass
+    # whose tensor annotations are TYPE_CHECKING-only), so the CPU-only path is
+    # unaffected.
+    "AttentionBackend",
+    "BatchMeta",
     # Generation
     "generate",
     "greedy",
@@ -49,6 +55,8 @@ _EXPORTS = {
     "LlamaModelGPU":          "engine.model_gpu",
     "KVCache":                "engine.cache",
     "KVCacheGPU":             "engine.cache",
+    "AttentionBackend":       "engine.attention_backend",
+    "BatchMeta":              "engine.attention_backend",
     "generate":               "engine.scheduler",
     "greedy":                 "engine.sampler",
     "get_sampler":            "engine.sampler",

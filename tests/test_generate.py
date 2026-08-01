@@ -39,7 +39,7 @@ def _no_cache_greedy(model, token_ids, max_tokens):
 
 @pytest.mark.slow
 def test_cache_matches_no_cache_short(model, oracle_short):
-    token_ids = list(oracle_short["input_ids"])
+    token_ids = list(oracle_short["token_ids"])
     cached    = _cached_greedy(model, token_ids, max_tokens=32)
     no_cache  = _no_cache_greedy(model, token_ids, max_tokens=32)
     assert cached == no_cache, (
@@ -49,7 +49,7 @@ def test_cache_matches_no_cache_short(model, oracle_short):
 
 @pytest.mark.slow
 def test_cache_matches_no_cache_medium(model, oracle_medium):
-    token_ids = list(oracle_medium["input_ids"])
+    token_ids = list(oracle_medium["token_ids"])
     cached    = _cached_greedy(model, token_ids, max_tokens=32)
     no_cache  = _no_cache_greedy(model, token_ids, max_tokens=32)
     assert cached == no_cache, (
@@ -60,7 +60,7 @@ def test_cache_matches_no_cache_medium(model, oracle_medium):
 @pytest.mark.slow
 def test_cache_matches_hf_greedy_short(model, oracle_short):
     """Generated tokens must match HF reference (via oracle fixture)."""
-    token_ids = list(oracle_short["input_ids"])
+    token_ids = list(oracle_short["token_ids"])
     cached    = _cached_greedy(model, token_ids, max_tokens=32)
     hf_ids    = list(oracle_short["greedy_ids"])
     assert cached == hf_ids, (
@@ -75,7 +75,7 @@ def test_cache_matches_hf_greedy_short(model, oracle_short):
 def test_cache_pos_after_prefill(model, oracle_short):
     from engine.cache import KVCache
 
-    token_ids = list(oracle_short["input_ids"])
+    token_ids = list(oracle_short["token_ids"])
     cache     = KVCache(model.n_layers, 2048, model.n_kv, model.head_dim)
     assert cache.pos == 0
 
@@ -86,7 +86,7 @@ def test_cache_pos_after_prefill(model, oracle_short):
 def test_cache_pos_after_decode(model, oracle_short):
     from engine.cache import KVCache
 
-    token_ids = list(oracle_short["input_ids"])
+    token_ids = list(oracle_short["token_ids"])
     cache     = KVCache(model.n_layers, 2048, model.n_kv, model.head_dim)
     model.prefill(token_ids, cache)
     start_pos = cache.pos
